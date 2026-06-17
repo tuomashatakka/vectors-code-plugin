@@ -299,6 +299,27 @@ is **nullable** (the worker fills `(space_id, embedding_id)` and creates the L0
 Feeder watermarks (transcript offsets, source-scan times) live in a small
 `daemon_state` key/value table so restarts resume cleanly.
 
+### Optional remote backup
+
+When `UKDB_BACKUP_PROVIDER` is set, the daemon also `pg_dump`s the whole DB
+(`-Fc`) and pushes it to one or more **pluggable providers**, self-throttled to
+~once a day (default 24h) and tracked in `daemon_state` so restarts don't
+double-back-up. Providers:
+
+- **`folder`** — copy into any local directory; pointed at a OneDrive or Google
+  Drive *local sync folder* this reaches those clouds with no API setup.
+- **`rclone`** — true cloud upload via a configured `rclone` remote (OneDrive,
+  Google Drive, etc.) when no local sync exists.
+- **`obsidian`** — copy into a vault subfolder and maintain a `UKDB Backups.md`
+  index note (mirror via Obsidian Sync / iCloud).
+- **`notion`** — write a backup *manifest* page (timestamp, size, sha256,
+  location); the dump bytes go to a byte-storing provider above, so Notion serves
+  as a searchable catalog rather than holding multi-MB binaries its API can't.
+
+Retention keeps the newest N dumps. This keeps a local-first store recoverable
+off-machine without coupling the daemon to any single vendor SDK — the byte path
+is a `pg_dump` file and the providers are thin adapters.
+
 ---
 
 ## 9. Token-saving retrieval (feature 5)

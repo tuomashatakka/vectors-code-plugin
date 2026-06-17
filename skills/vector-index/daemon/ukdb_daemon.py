@@ -53,8 +53,11 @@ import json
 import os
 import re
 import select
+import shutil
 import signal
+import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import urllib.error
@@ -101,6 +104,24 @@ POLL_INTERVAL = float(os.environ.get("UKDB_POLL_INTERVAL", "5"))
 FEEDER_INTERVAL = float(os.environ.get("UKDB_FEEDER_INTERVAL", "900"))
 BATCH = int(os.environ.get("UKDB_BATCH", "32"))
 DISABLE_FEEDERS = os.environ.get("UKDB_DISABLE_FEEDERS", "") == "1"
+
+# --- optional remote backup (off unless UKDB_BACKUP_PROVIDER is set) ---------
+# Comma-separated list of: folder | rclone | obsidian | notion. Several may run.
+BACKUP_PROVIDERS = [
+    p.strip().lower()
+    for p in os.environ.get("UKDB_BACKUP_PROVIDER", "").split(",")
+    if p.strip()
+]
+BACKUP_INTERVAL = float(os.environ.get("UKDB_BACKUP_INTERVAL", "86400"))  # daily
+BACKUP_RETENTION = int(os.environ.get("UKDB_BACKUP_RETENTION", "7"))      # keep N
+PG_DUMP = os.environ.get("UKDB_PG_DUMP", "pg_dump")
+BACKUP_DIR = os.environ.get("UKDB_BACKUP_DIR", "")             # provider: folder
+OBSIDIAN_VAULT = os.environ.get("UKDB_OBSIDIAN_VAULT", "")     # provider: obsidian
+OBSIDIAN_SUBDIR = os.environ.get("UKDB_OBSIDIAN_SUBDIR", "ukdb-backups")
+RCLONE_BIN = os.environ.get("UKDB_RCLONE_BIN", "rclone")       # provider: rclone
+RCLONE_REMOTE = os.environ.get("UKDB_RCLONE_REMOTE", "")       # e.g. onedrive:backups/ukdb
+NOTION_TOKEN = os.environ.get("UKDB_NOTION_TOKEN", "")         # provider: notion
+NOTION_PARENT = os.environ.get("UKDB_NOTION_PARENT", "")       # a Notion *page* id
 
 _NS = uuid.UUID("6f1d8a3e-2c5b-4e7a-9b0d-1f2a3b4c5d6e")  # stable namespace for det ids
 _URL_RE = re.compile(r"https?://[^\s)<>\]\"']+")
@@ -619,6 +640,180 @@ def reap_leases(conn) -> None:
 
 
 # ===========================================================================
+# Optional remote backup — pg_dump -> pluggable provider(s), ~once a day
+# ===========================================================================
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def make_dump() -> str | None:
+    """pg_dump the unified DB to a compressed custom-format file in TMPDIR."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+    out = os.path.join(tempfile.gettempdir(), f"ukdb-{ts}.dump")
+    cmd = [PG_DUMP, "-Fc", "--no-owner", "--no-privileges", "-f", out, DSN]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except FileNotFoundError:
+        log(f"backup: {PG_DUMP} not found (set UKDB_PG_DUMP); skipping")
+        return None
+    except subprocess.CalledProcessError as e:
+        log(f"backup: pg_dump failed: {e.stderr.decode('utf-8','replace')[:300]}")
+        return None
+    return out
+
+
+def _prune_dir(directory: Path) -> None:
+    dumps = sorted(directory.glob("ukdb-*.dump"))  # timestamp names sort chronologically
+    for old in dumps[:-BACKUP_RETENTION] if BACKUP_RETENTION > 0 else []:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def _backup_folder(src: str, meta: dict) -> str:
+    if not BACKUP_DIR:
+        raise RuntimeError("UKDB_BACKUP_DIR is required for the 'folder' provider")
+    dest_dir = Path(os.path.expanduser(BACKUP_DIR))
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / Path(src).name
+    shutil.copy2(src, dest)
+    _prune_dir(dest_dir)
+    return f"folder:{dest}"
+
+
+def _backup_obsidian(src: str, meta: dict) -> str:
+    if not OBSIDIAN_VAULT:
+        raise RuntimeError("UKDB_OBSIDIAN_VAULT is required for the 'obsidian' provider")
+    vault = Path(os.path.expanduser(OBSIDIAN_VAULT))
+    sub = vault / OBSIDIAN_SUBDIR
+    sub.mkdir(parents=True, exist_ok=True)
+    dest = sub / Path(src).name
+    shutil.copy2(src, dest)
+    _prune_dir(sub)
+    # Maintain a human-readable index note inside the vault (newest first).
+    note = vault / "UKDB Backups.md"
+    entry = (f"- `{OBSIDIAN_SUBDIR}/{Path(src).name}` — {meta['iso']} — "
+             f"{meta['size_mb']:.1f} MB — sha256 `{meta['sha'][:16]}…`\n")
+    header = ("# UKDB Backups\n\n"
+              "Automated daily backups of the Unified Knowledge Database.\n\n")
+    existing = ""
+    if note.exists():
+        body = note.read_text(encoding="utf-8")
+        existing = body[len(header):] if body.startswith(header) else body
+    note.write_text(header + entry + existing, encoding="utf-8")
+    return f"obsidian:{dest}"
+
+
+def _backup_rclone(src: str, meta: dict) -> str:
+    if not RCLONE_REMOTE:
+        raise RuntimeError("UKDB_RCLONE_REMOTE is required for the 'rclone' provider")
+    if not shutil.which(RCLONE_BIN):
+        raise RuntimeError(f"{RCLONE_BIN} not found on PATH")
+    dest = f"{RCLONE_REMOTE.rstrip('/')}/{Path(src).name}"
+    subprocess.run([RCLONE_BIN, "copyto", src, dest], check=True, capture_output=True)
+    # Best-effort retention on the remote (keep files newer than N days).
+    if BACKUP_RETENTION > 0:
+        subprocess.run(
+            [RCLONE_BIN, "delete", "--min-age", f"{BACKUP_RETENTION}d", RCLONE_REMOTE],
+            check=False, capture_output=True,
+        )
+    return f"rclone:{dest}"
+
+
+def _backup_notion(src: str, meta: dict) -> str:
+    """Record a backup manifest entry as a child page under a Notion page. Notion's
+    API can't hold a multi-MB DB dump, so the bytes go to folder/rclone/obsidian
+    and this provider keeps a searchable catalog (timestamp, size, checksum,
+    location)."""
+    if not (NOTION_TOKEN and NOTION_PARENT):
+        raise RuntimeError("UKDB_NOTION_TOKEN and UKDB_NOTION_PARENT are required")
+    title = f"UKDB backup {meta['iso']}"
+    detail = (f"size {meta['size_mb']:.1f} MB · sha256 {meta['sha']} · "
+              f"locations: {meta.get('locations', 'n/a')}")
+    body = {
+        "parent": {"type": "page_id", "page_id": NOTION_PARENT},
+        "properties": {"title": {"title": [{"text": {"content": title}}]}},
+        "children": [{
+            "object": "block", "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": detail}}]},
+        }],
+    }
+    req = urllib.request.Request(
+        "https://api.notion.com/v1/pages",
+        data=json.dumps(body).encode(),
+        headers={
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        page = json.loads(resp.read())
+    return f"notion:{page.get('id', 'page')}"
+
+
+BACKUP_PROVIDER_FNS = {
+    "folder": _backup_folder,
+    "obsidian": _backup_obsidian,
+    "rclone": _backup_rclone,
+    "notion": _backup_notion,
+}
+
+
+def run_backup(conn, *, force: bool = False) -> dict | None:
+    """Dump the DB and push it to each configured provider, ~once a day. Returns
+    a result dict, or None if backups are disabled or not yet due."""
+    if not BACKUP_PROVIDERS:
+        return None
+    if not force:
+        last = state_get(conn, "backup").get("last_epoch", 0)
+        if (time.time() - last) < BACKUP_INTERVAL:
+            return None
+    path = make_dump()
+    if not path:
+        return None
+    size_mb = os.path.getsize(path) / (1 << 20)
+    meta = {
+        "iso": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "size_mb": size_mb,
+        "sha": _file_sha256(path),
+        "file": Path(path).name,
+    }
+    # Run byte-storing providers first so notion's manifest can name the locations.
+    order = sorted(BACKUP_PROVIDERS, key=lambda p: p == "notion")
+    results: dict[str, str] = {}
+    for prov in order:
+        fn = BACKUP_PROVIDER_FNS.get(prov)
+        if not fn:
+            results[prov] = "error: unknown provider"
+            continue
+        try:
+            if prov == "notion":
+                meta["locations"] = "; ".join(
+                    v for k, v in results.items() if not v.startswith("error")
+                ) or "n/a"
+            results[prov] = fn(path, meta)
+            log(f"backup -> {results[prov]}")
+        except Exception as e:
+            results[prov] = f"error: {e}"
+            log(f"backup provider {prov} failed: {str(e)[:200]}")
+    try:
+        os.unlink(path)  # the temp dump; providers copied/uploaded what they need
+    except OSError:
+        pass
+    state_set(conn, "backup", {
+        "last_epoch": time.time(), "last_iso": meta["iso"],
+        "file": meta["file"], "size_mb": round(size_mb, 2), "results": results,
+    })
+    return {"meta": meta, "results": results}
+
+
+# ===========================================================================
 # Main loop
 # ===========================================================================
 def _stop(signum, frame):  # noqa: ARG001
@@ -634,7 +829,9 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    log(f"starting (ollama={OLLAMA_URL} model={OLLAMA_MODEL}, feeders={'off' if DISABLE_FEEDERS else 'on'})")
+    backup_note = ",".join(BACKUP_PROVIDERS) if BACKUP_PROVIDERS else "off"
+    log(f"starting (ollama={OLLAMA_URL} model={OLLAMA_MODEL}, "
+        f"feeders={'off' if DISABLE_FEEDERS else 'on'}, backup={backup_note})")
     conn = psycopg.connect(DSN, autocommit=True)
     conn.execute("LISTEN digest")
     ensure_space(conn)  # fail fast if the schema/pgvector isn't there
@@ -647,6 +844,7 @@ def main() -> int:
                 feed_chats(conn)
                 feed_sources(conn)
                 last_feed = time.time()
+            run_backup(conn)  # self-throttles to ~once a day; no-op if disabled
             drained = drain_jobs(conn, BATCH)
             if drained >= BATCH:
                 continue  # more work waiting; loop immediately
@@ -670,5 +868,24 @@ def main() -> int:
     return 0
 
 
+def backup_now() -> int:
+    """Force one backup immediately and exit (for testing the provider config)."""
+    if not DSN:
+        sys.stderr.write("ukdb_daemon: UKDB_DSN is required\n")
+        return 2
+    if not BACKUP_PROVIDERS:
+        sys.stderr.write("ukdb_daemon: set UKDB_BACKUP_PROVIDER first\n")
+        return 2
+    conn = psycopg.connect(DSN, autocommit=True)
+    out = run_backup(conn, force=True)
+    conn.close()
+    print(json.dumps(out, indent=2, default=str))
+    return 0 if out and all(
+        not v.startswith("error") for v in out["results"].values()
+    ) else 1
+
+
 if __name__ == "__main__":
+    if "--backup-now" in sys.argv[1:]:
+        raise SystemExit(backup_now())
     raise SystemExit(main())
