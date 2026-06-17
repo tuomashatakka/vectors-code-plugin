@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vectors-plugin — local semantic RAG, indexed by project</title>
+<meta name="description" content="A global, local, project-partitioned semantic RAG store for your code and docs. Per-project and cross-project search, an MCP server, and a background sync daemon. Everything runs locally — no API keys.">
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #161616;
+    --muted: #6b6b6b;
+    --line: #e6e6e6;
+    --code-bg: #f6f6f6;
+    --accent: #2752e7;
+    --maxw: 760px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0e0e;
+      --fg: #ededed;
+      --muted: #9a9a9a;
+      --line: #242424;
+      --code-bg: #161616;
+      --accent: #7aa2ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, .mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.875em;
+  }
+  code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+
+  header.hero { padding: 88px 0 56px; border-bottom: 1px solid var(--line); }
+  .eyebrow {
+    font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 2.35rem; line-height: 1.12; letter-spacing: -0.02em; margin: 0 0 16px; font-weight: 650; }
+  .lede { font-size: 1.175rem; color: var(--muted); margin: 0 0 28px; max-width: 38em; }
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn {
+    display: inline-block;
+    padding: 9px 16px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--fg);
+    font-weight: 550;
+    font-size: 0.95rem;
+  }
+  .btn:hover { border-color: var(--fg); text-decoration: none; }
+  .btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .btn.primary:hover { opacity: 0.88; }
+
+  section { padding: 56px 0; border-bottom: 1px solid var(--line); }
+  h2 { font-size: 1.35rem; letter-spacing: -0.01em; margin: 0 0 18px; font-weight: 600; }
+  h3 { font-size: 1rem; margin: 0 0 6px; font-weight: 600; }
+  p { margin: 0 0 16px; }
+  .muted { color: var(--muted); }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px 36px; margin-top: 8px; }
+  .grid .item p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+
+  .diagram { color: var(--muted); white-space: pre; font-size: 0.8rem; line-height: 1.5; }
+
+  dl.facts { margin: 0; }
+  dl.facts > div { padding: 14px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 160px 1fr; gap: 20px; }
+  dl.facts > div:first-child { border-top: none; }
+  dl.facts dt { font-weight: 600; }
+  dl.facts dd { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  @media (max-width: 600px) { dl.facts > div { grid-template-columns: 1fr; gap: 4px; } }
+
+  ul.clean { margin: 0; padding-left: 1.1em; }
+  ul.clean li { margin: 0 0 8px; color: var(--muted); }
+  ul.clean li b { color: var(--fg); font-weight: 600; }
+
+  .tag {
+    display: inline-block; font: 600 11px/1 ui-monospace, Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 4px; padding: 4px 7px; margin-left: 8px;
+    vertical-align: middle;
+  }
+
+  footer { padding: 48px 0 72px; color: var(--muted); font-size: 0.9rem; }
+  footer a { color: var(--muted); text-decoration: underline; }
+  footer a:hover { color: var(--fg); }
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">vectors-plugin</div>
+    <h1>Local semantic search over your code &amp; docs, indexed by project.</h1>
+    <p class="lede">
+      A global, on-disk RAG store partitioned by project. Point it at a repo or a
+      folder of notes; get reranked semantic search back — per project or across
+      all of them. Ships as a Claude Code / opencode / Claude Desktop plugin with
+      an MCP server. No API keys, no network at query time.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/tuomashatakka/vectors-code-plugin">View on GitHub</a>
+      <a class="btn" href="https://github.com/tuomashatakka/vectors-code-plugin#install">Install</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>What it is</h2>
+    <p>
+      One store on disk holds many <b>projects</b>; each is its own embedded,
+      cross-encoder-reranked index. The active project is <b>auto-resolved from
+      your working directory</b>, so an agent working inside a repo gets that
+      repo's retrieval automatically — and you can still search <b>globally</b>
+      across every project at once.
+    </p>
+    <pre class="diagram">$VINDEX_HOME            one global RAG database
+  ├── scene/            a project — its own collection + config + root
+  ├── portfolio/
+  └── rustbook/
+
+per-project   files → chunk → embed → store        (ingest, once)
+              query → embed → top-k → rerank        (search, fast, offline)
+global        fan out across projects → merge → one rerank → tagged hits</pre>
+  </section>
+
+  <section>
+    <h2>Core ideas</h2>
+    <div class="grid">
+      <div class="item">
+        <h3>Project from your cwd</h3>
+        <p>Resolution walks <code>$VINDEX_PROJECT</code> → nearest project root → a <code>.git</code>/<code>.vindex</code> marker → default. You rarely name the project.</p>
+      </div>
+      <div class="item">
+        <h3>Per-project &amp; global search</h3>
+        <p>Search one project, or fan out across all of them and rerank the union so results are comparable even across different embedding models.</p>
+      </div>
+      <div class="item">
+        <h3>Fully local</h3>
+        <p>Embeddings (<code>all-MiniLM-L6-v2</code>) and the cross-encoder reranker run on-device. No API keys; no network when you query.</p>
+      </div>
+      <div class="item">
+        <h3>Any corpus</h3>
+        <p>Local dirs or git repos, filtered by globs, with markdown / code / text chunking chosen per file. Public URLs reconstructed for each hit.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Four ways to use it</h2>
+    <dl class="facts">
+      <div><dt>CLI</dt><dd>Create projects, ingest, run one-off queries (project or global), list projects, serve the viewer — <code>vindex.py</code>.</dd></div>
+      <div><dt>MCP server</dt><dd>Live tools for Claude / agents: <code>search</code>, <code>search_global</code>, <code>current_project</code>, <code>ingest</code>, <code>create_project</code>, and more.</dd></div>
+      <div><dt>Library</dt><dd><code>import vector_index</code> — the <code>Project</code> class plus <code>global_search</code> and <code>resolve_project_name</code>.</dd></div>
+      <div><dt>3D viewer</dt><dd>A three.js “synapse” navigator that PCAs a project's embedding space and lets you explore it interactively.</dd></div>
+    </dl>
+  </section>
+
+  <section>
+    <h2>Quickstart</h2>
+    <pre><code>cd skills/vector-index &amp;&amp; bash setup.sh        # build the venv, install deps
+PY=./.venv/bin/python
+
+# index the project you're standing in (root defaults to --source)
+$PY scripts/vindex.py create scene --source . --strategy code \
+    --glob '**/*.ts' --glob '**/*.md'
+$PY scripts/vindex.py ingest
+$PY scripts/vindex.py query "how does the flock pick ideas?"
+
+# ask across every project at once
+$PY scripts/vindex.py search "welded indexed geometry deterministic seed"</code></pre>
+  </section>
+
+  <section>
+    <h2>Unified knowledge database <span class="tag">design</span></h2>
+    <p class="muted">
+      The repo includes a full design + DDL for consolidating everything into a
+      single local PostgreSQL&nbsp;+&nbsp;pgvector store, so vectors and memory live
+      side by side and cross-reference cleanly.
+    </p>
+    <ul class="clean">
+      <li><b>One store, four kinds of knowledge</b> — chunk vectors, chat history, external references (URLs, Drive, Notion), and your own document/codebase content.</li>
+      <li><b>Multi-project, not isolated</b> — a project hierarchy plus sibling links; content is tagged by project yet still searchable globally.</li>
+      <li><b>A 4-level memory ladder</b> — from verbatim content (L0) up to vague concepts (L3), derived by a local model and regenerated when the source changes — without ever mutating the originals.</li>
+      <li><b>Constantly-learning memory</b> — durable facts and preferences with confidence, reinforcement, and decay.</li>
+      <li><b>Token-saving retrieval</b> — serve high-level summaries first and drill to detail only on demand.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Background daemon &amp; backup <span class="tag">in repo</span></h2>
+    <p class="muted">
+      A single long-lived process (launchd on macOS, systemd on Linux) keeps the
+      database current and recoverable, with no manual steps.
+    </p>
+    <ul class="clean">
+      <li><b>Chat feeder</b> — watches transcript files and ingests new conversation context automatically.</li>
+      <li><b>Source feeder</b> — mirrors changed project files into the store, content-hash diffed.</li>
+      <li><b>Digest worker</b> — drains a job queue, embedding content and running local-Ollama summarization, fact, and reference extraction.</li>
+      <li><b>Optional daily backup</b> — <code>pg_dump</code> pushed to OneDrive or Google Drive (local sync folder or <code>rclone</code>), an Obsidian vault, and/or a Notion manifest, with retention.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>
+      Everything runs locally — no API keys, no query-time network.
+      <br>
+      <a href="https://github.com/tuomashatakka/vectors-code-plugin">github.com/tuomashatakka/vectors-code-plugin</a>
+      · MIT licensed
+    </p>
+  </footer>
+
+</main>
+</body>
+</html>
