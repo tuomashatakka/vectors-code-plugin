@@ -153,6 +153,10 @@ best-effort only.
 - **Different store**: the only zvec touchpoints are `Index._schema`, `open`,
   `ingest` (insert/flush/optimize) and `search` (query). Reimplement those four to
   back it with another vector DB; the rest of the library is store-agnostic.
+  [`unified-knowledge-db-spec.md`](unified-knowledge-db-spec.md) is a worked
+  design for swapping the store to PostgreSQL + pgvector and unifying it with chat
+  memory, external references, and a multi-level memory abstraction (DDL in
+  [`unified-knowledge-db.sql`](unified-knowledge-db.sql)).
 
 ## The 3D viewer
 

@@ -201,3 +201,7 @@ reranks, and how to add a chunking strategy or swap the embedding model/store.
 - `scripts/viewer_server.py` — JSON API + viewer host.
 - `assets/viewer.html` — 3D synapse navigator.
 - `references/architecture.md` — internals, schema, extension points.
+- `references/unified-knowledge-db-spec.md` — design for a unified PostgreSQL +
+  pgvector store (vectors + chat memory + external references + own content) with
+  a 4-level memory abstraction, Ollama-driven background digesting, and
+  token-saving retrieval; DDL in `references/unified-knowledge-db.sql`.
