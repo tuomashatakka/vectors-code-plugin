@@ -120,7 +120,11 @@ def get_reranker(model: str = DEFAULT_RERANK_MODEL) -> CrossEncoder:
 
 def embed_dim_for(model: str = DEFAULT_EMBED_MODEL) -> int:
     if model not in _dim_cache:
-        _dim_cache[model] = int(get_embedder(model).get_sentence_embedding_dimension())
+        emb = get_embedder(model)
+        # sentence-transformers renamed the method; support both.
+        getter = getattr(emb, "get_embedding_dimension", None) or \
+            emb.get_sentence_embedding_dimension
+        _dim_cache[model] = int(getter())
     return _dim_cache[model]
 
 
@@ -384,12 +388,27 @@ def _source_root(name: str, src: Source) -> Path:
     return root / src.subdir if src.subdir else root
 
 
+def _excluded(rel: str, exclude: list[str]) -> bool:
+    """True if `rel` should be excluded. fnmatch doesn't treat '/' specially, so
+    a pattern like '**/node_modules/**' won't match a *top-level* 'node_modules/'
+    (it needs a leading segment). We therefore also match the stripped pattern
+    and check whether the excluded directory token appears as a path segment."""
+    parts = Path(rel).parts
+    for e in exclude:
+        if fnmatch(rel, e) or fnmatch(rel, e.lstrip("*/")):
+            return True
+        core = e.strip("*/")  # e.g. "**/node_modules/**" -> "node_modules"
+        if core and "/" not in core and core in parts:
+            return True
+    return False
+
+
 def _matches(rel: str, src: Source) -> bool:
     if not any(fnmatch(rel, g) or fnmatch(rel, g.lstrip("*/")) for g in src.globs):
         # also allow simple suffix globs like **/*.md to match top-level files
         if not any(rel.endswith(g.split("*")[-1]) for g in src.globs if "*" in g):
             return False
-    return not any(fnmatch(rel, e) for e in src.exclude)
+    return not _excluded(rel, src.exclude)
 
 
 def iter_files(name: str, src: Source):
