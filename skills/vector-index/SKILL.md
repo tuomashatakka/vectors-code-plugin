@@ -205,3 +205,7 @@ reranks, and how to add a chunking strategy or swap the embedding model/store.
   pgvector store (vectors + chat memory + external references + own content) with
   a 4-level memory abstraction, Ollama-driven background digesting, and
   token-saving retrieval; DDL in `references/unified-knowledge-db.sql`.
+- `daemon/` — background daemon (`ukdb_daemon.py`) that keeps the unified DB
+  current from chat transcripts + file sources and drains the digest queue, with
+  macOS launchd / Linux systemd install tooling (`install.sh`); see
+  `daemon/README.md`.

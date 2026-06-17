@@ -3,3 +3,7 @@ zvec>=0.5.0                       # in-process vector store (HNSW + rerank)
 sentence-transformers>=2.2.0     # local embedding + cross-encoder rerank models
 numpy>=1.24                      # PCA / knn for the 3D viewer
 mcp>=1.2.0                       # FastMCP stdio server (the project-aware RAG tools)
+
+# Unified Knowledge Database daemon (daemon/ukdb_daemon.py) — installed by
+# daemon/install.sh into this venv; uncomment to include in `bash setup.sh`.
+# psycopg[binary]>=3.1           # Postgres client for the background sync daemon

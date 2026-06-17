@@ -154,8 +154,10 @@ CREATE TABLE chunk (
   url           text,
   content_hash  bytea NOT NULL,
   token_count   integer,
-  space_id      uuid NOT NULL REFERENCES embedding_space(id),
-  embedding_id  uuid NOT NULL,                     -- -> emb_<space>.embedding_id (app-enforced)
+  space_id      uuid REFERENCES embedding_space(id),
+  embedding_id  uuid,                              -- nullable: feeders insert raw,
+                                                   -- the 'embed' digest job fills it
+                                                   -- -> emb_<space>.embedding_id (app-enforced)
   created_at    timestamptz NOT NULL DEFAULT now(),
   UNIQUE (document_id, ordinal)
 );
@@ -406,3 +408,15 @@ CREATE TRIGGER message_enqueue_digest
 CREATE TRIGGER reference_enqueue_digest
   AFTER INSERT ON reference
   FOR EACH ROW EXECUTE FUNCTION enqueue_digest('reference');
+
+
+-- ----------------------------------------------------------------------------
+-- Daemon watermarks: small key/value store for the background daemon's feeders
+-- (last chat-transcript offsets, last source-refresh scan times, etc.). See
+-- daemon/ukdb_daemon.py and daemon/README.md.
+-- ----------------------------------------------------------------------------
+CREATE TABLE daemon_state (
+  key         text PRIMARY KEY,
+  value       jsonb NOT NULL DEFAULT '{}',
+  updated_at  timestamptz NOT NULL DEFAULT now()
+);

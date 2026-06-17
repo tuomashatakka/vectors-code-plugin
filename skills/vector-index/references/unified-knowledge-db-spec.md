@@ -275,6 +275,30 @@ source of truth.** Everything after `embed` is **data-driven cascade**: `embed`
 done → enqueue `extract_*` → `summarize` → parent `cluster_topics`, each with a
 `dedupe_key` so a busy project doesn't pile up redundant work.
 
+### The background daemon (macOS-first)
+
+The worker and the two feeders that keep the store current are implemented as a
+single long-lived process, [`daemon/ukdb_daemon.py`](../daemon/ukdb_daemon.py),
+with launchd/systemd install tooling in [`daemon/`](../daemon/README.md):
+
+- **Chat feeder** — watches chat-transcript files (Claude Code / Desktop JSONL by
+  default) and upserts new `session` / `message` rows; each insert fires the
+  enqueue trigger, so new chat context becomes searchable automatically.
+- **Source feeder** — mirrors changed files from each existing
+  `$VINDEX_HOME/<project>/config.json` into `document` / `chunk`, content-hash
+  diffed, reusing the plugin's proven chunking (`vector_index.chunk_file`).
+- **Job worker** — the queue consumer above: `embed` on sentence-transformers
+  (no network) plus the Ollama digest tasks.
+
+On macOS `daemon/install.sh` writes a launchd LaunchAgent
+(`com.vectors.ukdb`, `RunAtLoad` + `KeepAlive`) with env baked in from
+`ukdb-daemon.env`; on Linux it writes a `systemd --user` unit. Because chunks can
+now be inserted by a feeder and embedded later by the queue, `chunk.embedding_id`
+is **nullable** (the worker fills `(space_id, embedding_id)` and creates the L0
+`memory_node`); migration that already has vectors fills them inline instead.
+Feeder watermarks (transcript offsets, source-scan times) live in a small
+`daemon_state` key/value table so restarts resume cleanly.
+
 ---
 
 ## 9. Token-saving retrieval (feature 5)
