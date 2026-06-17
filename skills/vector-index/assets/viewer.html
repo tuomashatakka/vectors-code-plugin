@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>vector-index · synapse viewer</title>
+<style>
+  :root { --bg:#0a0b0e; --fg:#e7e9ee; --dim:#8a8f9c; --accent:#6cf; --hot:#f86; }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; background:var(--bg); color:var(--fg);
+    font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace; overflow:hidden; }
+  #c { position:fixed; inset:0; display:block; }
+  .panel { position:fixed; z-index:10; background:rgba(14,16,20,.82);
+    border:1px solid #232733; backdrop-filter:blur(8px); padding:10px 12px; }
+  #hud { top:12px; left:12px; max-width:42ch; }
+  #hud h1 { font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--dim); }
+  #hud .meta { color:var(--dim); margin-top:4px; }
+  #searchbar { top:12px; right:12px; display:flex; gap:6px; }
+  #q { background:#11141a; border:1px solid #2a2f3b; color:var(--fg);
+    padding:7px 9px; width:30ch; outline:none; }
+  #q:focus { border-color:var(--accent); }
+  button { background:#1a1f29; border:1px solid #2a2f3b; color:var(--fg);
+    padding:7px 11px; cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  #detail { bottom:12px; left:12px; max-width:54ch; display:none; }
+  #detail .t { color:var(--accent); font-weight:600; }
+  #detail .s { color:var(--dim); word-break:break-all; }
+  #detail .snip { margin-top:6px; color:#c4c8d2; max-height:6em; overflow:hidden; }
+  #hint { bottom:12px; right:12px; color:var(--dim); text-align:right; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud" class="panel">
+  <h1>synapse viewer</h1>
+  <div class="meta" id="meta">loading…</div>
+</div>
+<div id="searchbar" class="panel">
+  <input id="q" placeholder="semantic search…" autocomplete="off" />
+  <button id="go">search</button>
+</div>
+<div id="detail" class="panel">
+  <div class="t" id="d-title"></div>
+  <div class="s" id="d-src"></div>
+  <div class="snip" id="d-snip"></div>
+  <div style="margin-top:6px"><a id="d-link" target="_blank" rel="noopener"></a></div>
+</div>
+<div id="hint" class="panel">drag orbit · wheel zoom · click focus · ↑↓←→ traverse · enter open · esc clear</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const API = location.origin;
+const cv = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas:cv, antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x0a0b0e, 0.045);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
+
+// --- custom orbit (no OrbitControls dependency) ---
+let radius=14, theta=0.6, phi=1.1, target=new THREE.Vector3(0,0,0);
+function applyCam(){
+  camera.position.set(
+    target.x + radius*Math.sin(phi)*Math.cos(theta),
+    target.y + radius*Math.cos(phi),
+    target.z + radius*Math.sin(phi)*Math.sin(theta));
+  camera.lookAt(target);
+}
+let drag=false, px=0, py=0;
+cv.addEventListener('pointerdown', e=>{drag=true;px=e.clientX;py=e.clientY;});
+addEventListener('pointerup', ()=>drag=false);
+addEventListener('pointermove', e=>{ if(!drag)return;
+  theta -= (e.clientX-px)*0.005; phi = Math.max(0.15, Math.min(3.0, phi-(e.clientY-py)*0.005));
+  px=e.clientX; py=e.clientY; });
+cv.addEventListener('wheel', e=>{ e.preventDefault();
+  radius = Math.max(3, Math.min(60, radius*(1+Math.sign(e.deltaY)*0.08))); }, {passive:false});
+
+// --- state ---
+let nodes=[], pointsMesh=null, lineMesh=null, focus=-1, adjacency={};
+const COL_BASE=new THREE.Color(0x3a6ea5), COL_HOT=new THREE.Color(0xff8866),
+      COL_HIT=new THREE.Color(0x66ccff);
+
+function clearScene(){
+  if(pointsMesh){scene.remove(pointsMesh);pointsMesh.geometry.dispose();}
+  if(lineMesh){scene.remove(lineMesh);lineMesh.geometry.dispose();}
+}
+
+function renderGraph(g){
+  clearScene(); nodes=g.nodes; adjacency={};
+  const N=nodes.length;
+  const pos=new Float32Array(N*3), col=new Float32Array(N*3);
+  nodes.forEach((n,i)=>{ pos[i*3]=n.p[0]; pos[i*3+1]=n.p[1]; pos[i*3+2]=n.p[2];
+    COL_BASE.toArray(col,i*3); });
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+  pointsMesh=new THREE.Points(geo, new THREE.PointsMaterial(
+    {size:0.42, vertexColors:true, sizeAttenuation:true}));
+  scene.add(pointsMesh);
+
+  const lp=[];
+  (g.links||[]).forEach(([a,b])=>{ adjacency[a]=adjacency[a]||[]; adjacency[b]=adjacency[b]||[];
+    adjacency[a].push(b); adjacency[b].push(a);
+    lp.push(nodes[a].p[0],nodes[a].p[1],nodes[a].p[2], nodes[b].p[0],nodes[b].p[1],nodes[b].p[2]); });
+  const lgeo=new THREE.BufferGeometry();
+  lgeo.setAttribute('position', new THREE.Float32BufferAttribute(lp,3));
+  lineMesh=new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial(
+    {color:0x2b3340, transparent:true, opacity:0.35}));
+  scene.add(lineMesh);
+  recolor();
+}
+
+function recolor(hits){
+  if(!pointsMesh)return; const col=pointsMesh.geometry.attributes.color;
+  nodes.forEach((n,i)=>{
+    let c=COL_BASE;
+    if(hits&&hits.has(i))c=COL_HIT;
+    if(i===focus)c=COL_HOT;
+    c.toArray(col.array,i*3);
+  });
+  col.needsUpdate=true;
+}
+
+function showDetail(i){
+  const n=nodes[i]; if(!n)return;
+  document.getElementById('detail').style.display='block';
+  document.getElementById('d-title').textContent=n.title||n.source||'';
+  document.getElementById('d-src').textContent=n.source||'';
+  document.getElementById('d-snip').textContent=n.snippet||'';
+  const a=document.getElementById('d-link');
+  if(n.url){a.href=n.url;a.textContent=n.url;a.style.display='inline';}
+  else{a.style.display='none';}
+}
+function setFocus(i){ focus=i; recolor(window._hits);
+  if(nodes[i]){ target.lerp(new THREE.Vector3(...nodes[i].p),0.6); showDetail(i);} }
+
+// --- picking ---
+const ray=new THREE.Raycaster(); ray.params.Points.threshold=0.5;
+cv.addEventListener('click', e=>{
+  if(!pointsMesh)return;
+  const m=new THREE.Vector2((e.clientX/innerWidth)*2-1, -(e.clientY/innerHeight)*2+1);
+  ray.setFromCamera(m,camera);
+  const hit=ray.intersectObject(pointsMesh);
+  if(hit.length)setFocus(hit[0].index);
+});
+
+addEventListener('keydown', e=>{
+  if(document.activeElement===document.getElementById('q'))return;
+  if(e.key==='Escape'){focus=-1;window._hits=null;recolor();
+    document.getElementById('detail').style.display='none';return;}
+  if(e.key==='Enter'&&nodes[focus]&&nodes[focus].url){window.open(nodes[focus].url,'_blank');return;}
+  const nb=adjacency[focus]||[];
+  if(['ArrowRight','ArrowDown'].includes(e.key)&&nb.length)setFocus(nb[(nb._i=((nb._i||0)+1)%nb.length)]);
+  if(['ArrowLeft','ArrowUp'].includes(e.key)&&nb.length)setFocus(nb[(nb._i=((nb._i||0)-1+nb.length)%nb.length)]);
+});
+
+// --- data ---
+async function loadStatus(){
+  const s=await (await fetch(API+'/api/status')).json();
+  document.getElementById('meta').innerHTML=
+    `<b>${s.name}</b> · ${s.doc_count} chunks · ${s.embed_model}<br>${s.state}`;
+}
+async function loadGraph(){
+  const g=await (await fetch(API+'/api/graph?n=500&k=3')).json();
+  renderGraph(g);
+}
+async function doSearch(){
+  const q=document.getElementById('q').value.trim(); if(!q)return;
+  const r=await (await fetch(API+'/api/search?q='+encodeURIComponent(q))).json();
+  const hits=new Set();
+  (r.results||[]).forEach(res=>{
+    if(typeof res.graph_index==='number')hits.add(res.graph_index);
+  });
+  window._hits=hits; recolor(hits);
+  if(r.results&&r.results[0]){
+    const top=r.results[0];
+    if(typeof top.graph_index==='number')setFocus(top.graph_index);
+    else { // spliced node not in sample: drop detail panel straight from result
+      document.getElementById('detail').style.display='block';
+      document.getElementById('d-title').textContent=top.title||'';
+      document.getElementById('d-src').textContent=top.source||'';
+      document.getElementById('d-snip').textContent=top.snippet||'';
+      const a=document.getElementById('d-link');
+      if(top.url){a.href=top.url;a.textContent=top.url;a.style.display='inline';}else a.style.display='none';
+    }
+  }
+}
+document.getElementById('go').onclick=doSearch;
+document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+
+function resize(){ renderer.setSize(innerWidth,innerHeight); camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix(); }
+addEventListener('resize',resize); resize();
+(function loop(){ requestAnimationFrame(loop); applyCam(); renderer.render(scene,camera); })();
+loadStatus(); loadGraph();
+</script>
+</body>
+</html>
