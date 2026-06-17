@@ -6,7 +6,7 @@
     "name": "Tundra",
     "url": "https://github.com/tuomashatakka"
   },
-  "homepage": "https://github.com/tuomashatakka/vectors-plugin",
+  "homepage": "https://github.com/tuomashatakka/vectors-code-plugin",
   "license": "MIT",
   "keywords": ["rag", "vector-search", "semantic-search", "embeddings", "mcp", "local-llm", "project"]
 }
