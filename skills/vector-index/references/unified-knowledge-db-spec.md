@@ -275,6 +275,51 @@ source of truth.** Everything after `embed` is **data-driven cascade**: `embed`
 done → enqueue `extract_*` → `summarize` → parent `cluster_topics`, each with a
 `dedupe_key` so a busy project doesn't pile up redundant work.
 
+### The background daemon (macOS-first)
+
+The worker and the two feeders that keep the store current are implemented as a
+single long-lived process, [`daemon/ukdb_daemon.py`](../daemon/ukdb_daemon.py),
+with launchd/systemd install tooling in [`daemon/`](../daemon/README.md):
+
+- **Chat feeder** — watches chat-transcript files (Claude Code / Desktop JSONL by
+  default) and upserts new `session` / `message` rows; each insert fires the
+  enqueue trigger, so new chat context becomes searchable automatically.
+- **Source feeder** — mirrors changed files from each existing
+  `$VINDEX_HOME/<project>/config.json` into `document` / `chunk`, content-hash
+  diffed, reusing the plugin's proven chunking (`vector_index.chunk_file`).
+- **Job worker** — the queue consumer above: `embed` on sentence-transformers
+  (no network) plus the Ollama digest tasks.
+
+On macOS `daemon/install.sh` writes a launchd LaunchAgent
+(`com.vectors.ukdb`, `RunAtLoad` + `KeepAlive`) with env baked in from
+`ukdb-daemon.env`; on Linux it writes a `systemd --user` unit. Because chunks can
+now be inserted by a feeder and embedded later by the queue, `chunk.embedding_id`
+is **nullable** (the worker fills `(space_id, embedding_id)` and creates the L0
+`memory_node`); migration that already has vectors fills them inline instead.
+Feeder watermarks (transcript offsets, source-scan times) live in a small
+`daemon_state` key/value table so restarts resume cleanly.
+
+### Optional remote backup
+
+When `UKDB_BACKUP_PROVIDER` is set, the daemon also `pg_dump`s the whole DB
+(`-Fc`) and pushes it to one or more **pluggable providers**, self-throttled to
+~once a day (default 24h) and tracked in `daemon_state` so restarts don't
+double-back-up. Providers:
+
+- **`folder`** — copy into any local directory; pointed at a OneDrive or Google
+  Drive *local sync folder* this reaches those clouds with no API setup.
+- **`rclone`** — true cloud upload via a configured `rclone` remote (OneDrive,
+  Google Drive, etc.) when no local sync exists.
+- **`obsidian`** — copy into a vault subfolder and maintain a `UKDB Backups.md`
+  index note (mirror via Obsidian Sync / iCloud).
+- **`notion`** — write a backup *manifest* page (timestamp, size, sha256,
+  location); the dump bytes go to a byte-storing provider above, so Notion serves
+  as a searchable catalog rather than holding multi-MB binaries its API can't.
+
+Retention keeps the newest N dumps. This keeps a local-first store recoverable
+off-machine without coupling the daemon to any single vendor SDK — the byte path
+is a `pg_dump` file and the providers are thin adapters.
+
 ---
 
 ## 9. Token-saving retrieval (feature 5)
