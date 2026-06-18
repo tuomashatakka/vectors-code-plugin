@@ -28,6 +28,8 @@ import numpy as np  # noqa: E402
 
 import vector_index as vi  # noqa: E402
 import zvec  # noqa: E402
+import references  # noqa: E402
+import units  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "7341"))
 HTML_PATH = Path(__file__).resolve().parent.parent / "assets" / "viewer.html"
@@ -85,13 +87,17 @@ def build_graph(n=400, k=3):
 
     nodes = []
     for i, d in enumerate(docs):
+        txt = d.field("text") or ""
         nodes.append(
             {
                 "id": d.id,
                 "title": d.field("title") or d.field("source") or "",
                 "source": d.field("source") or "",
+                "source_id": d.field("source_id") or "",
                 "url": d.field("url") or None,
                 "chunk": d.field("chunk") or 0,
+                "unit_type": d.field("unit_type") or "",
+                "snippet": " ".join(txt.split())[:240],
                 "p": [round(float(x), 4) for x in pos[i]],
             }
         )
@@ -103,6 +109,81 @@ def build_graph(n=400, k=3):
         _graph["comps"] = comps
         _graph["scale"] = scale
     return {"nodes": nodes, "links": links, "k": k}
+
+
+def node_detail(node_id):
+    """Everything we know about one chunk: where it lives, the symbol it defines,
+    the references it cites, its nearest semantic neighbours (relations / related
+    content), and the sibling chunks that make up the same document."""
+    coll = _INDEX.open()
+    bm = _INDEX._load_bm25()
+    fields = (bm.docs.get(node_id) if bm else None) or {}
+    text = fields.get("text", "")
+    source = fields.get("source", "")
+    with _state_lock:
+        idx = dict(_graph["id_to_idx"])
+
+    # Relations / related content: true nearest neighbours of this chunk's vector.
+    relations = []
+    if text:
+        emb = vi.get_embedder(_INDEX.cfg.embed_model).encode(
+            text[:2000], normalize_embeddings=True
+        ).tolist()
+        hits = coll.query(
+            queries=zvec.Query("embedding", vector=emb),
+            topk=9,
+            output_fields=vi._COLL_FIELDS,
+        )
+        for h in hits:
+            if h.id == node_id:
+                continue
+            relations.append({
+                "id": h.id,
+                "title": h.field("title") or h.field("source") or "",
+                "source": h.field("source") or "",
+                "chunk": h.field("chunk") or 0,
+                "unit_type": h.field("unit_type") or "",
+                "score": round(float(h.score), 4),
+                "graph_index": idx.get(h.id),
+            })
+            if len(relations) >= 6:
+                break
+
+    # The document this chunk belongs to: every sibling chunk of the same file.
+    document = []
+    if bm and source:
+        sibs = sorted(
+            ((f.get("chunk", 0), did, f) for did, f in bm.docs.items()
+             if f.get("source") == source),
+            key=lambda t: t[0],
+        )
+        for ch, did, f in sibs:
+            t = f.get("text", "")
+            document.append({
+                "id": did,
+                "chunk": ch,
+                "unit_type": f.get("unit_type") or "",
+                "title": f.get("title") or "",
+                "snippet": " ".join(t.split())[:90],
+                "graph_index": idx.get(did),
+                "self": did == node_id,
+            })
+
+    return {
+        "id": node_id,
+        "source": source,
+        "source_id": fields.get("source_id", ""),
+        "title": fields.get("title") or source,
+        "url": fields.get("url") or None,
+        "chunk": fields.get("chunk", 0),
+        "unit_type": fields.get("unit_type") or units.classify_unit(source, text, "auto"),
+        "symbol": units.symbol_name(text),
+        "text": text,
+        "char_count": len(text),
+        "references": references.extract_references(text),
+        "relations": relations,
+        "document": document,
+    }
 
 
 def _project(vec):
@@ -169,6 +250,9 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/search":
                 q = (qs.get("q", [""])[0]).strip()
                 self._json(search(q) if q else {"error": "empty query"}, 200 if q else 400)
+            elif parsed.path == "/api/node":
+                nid = (qs.get("id", [""])[0]).strip()
+                self._json(node_detail(nid) if nid else {"error": "missing id"}, 200 if nid else 400)
             else:
                 self._json({"error": "not found"}, 404)
         except BrokenPipeError:
