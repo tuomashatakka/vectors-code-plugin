@@ -618,7 +618,7 @@ class Index:
             query, normalize_embeddings=True
         ).tolist()
         hits = coll.query(
-            vectors=zvec.VectorQuery("embedding", vector=emb),
+            queries=zvec.Query("embedding", vector=emb),
             topk=fetch_k,
             include_vector=True,
             output_fields=_COLL_FIELDS,

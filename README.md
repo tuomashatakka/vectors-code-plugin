@@ -17,6 +17,14 @@ $VINDEX_HOME            one global RAG database
   └── rustbook/
 ```
 
+## How it works
+
+![vector-index usage flow](docs/flow.svg)
+
+Index a project once; then query it — per project, or globally across every
+project at once. Use it from the CLI, the MCP server, the Python library, or the
+3D viewer. An optional background daemon keeps everything re-ingested for you.
+
 ## What's inside
 
 ```
@@ -30,23 +38,34 @@ vectors-plugin/
 
 ## Install
 
+One command builds the venv, symlinks the skill, and registers the `vectors`
+MCP server into every tool it finds:
+
 ```bash
-# 1. build the skill's venv (creates skills/vector-index/.venv)
-cd skills/vector-index && bash setup.sh && cd -
+bash install.sh                 # build + wire everything; asks about the daemon
+bash install.sh --no-daemon     # ...build + wire only, skip the background daemon
+bash install.sh --yes           # ...non-interactive, daemon included
 ```
 
-Then make it discoverable in each tool. The skill is symlinked into each tool's
-skills directory; the MCP server is registered in each tool's MCP config.
+It's idempotent — re-run any time. Reverse it with `bash uninstall.sh` (add
+`--venv` to also drop the venv, `--daemon` to remove the background service).
+The on-disk store at `$VINDEX_HOME` is always left intact.
 
-- **Claude Code** — skill symlinked to `~/.claude/skills/vector-index`; MCP via
-  the bundled `.mcp.json` (when installed as a plugin) or `claude mcp add`.
-- **opencode** — skill symlinked to `~/.config/opencode/skills/vector-index`;
-  MCP registered in `~/.config/opencode/opencode.json`.
-- **Claude Desktop** — no skills directory, so integration is the MCP server in
-  `~/Library/Application Support/Claude/claude_desktop_config.json`.
+What it wires per tool:
+
+- **Claude Code** — skill → `~/.claude/skills/vector-index`, `/vectors` command →
+  `~/.claude/commands/`; MCP via the bundled `.mcp.json` (plugin installs) or
+  `claude mcp add` (user scope).
+- **opencode** — skill → `~/.config/opencode/skills/vector-index`, `/vectors`
+  command → `~/.config/opencode/command/`; MCP entry in
+  `~/.config/opencode/opencode.json`.
+- **Claude Desktop** — no skills dir, so just the MCP server in
+  `~/Library/Application Support/Claude/claude_desktop_config.json` (relies on
+  global search — it has no fixed working directory).
 
 MCP tools: `search`, `search_global`, `current_project`, `list_projects`,
-`project_status`, `ingest`, `reindex`, `create_project`, `add_source`.
+`project_status`, `ingest`, `reindex`, `create_project`, `add_source`,
+`validate_citations`, `resolve_reference`.
 
 ## Usage
 

@@ -47,7 +47,7 @@ def _sample_docs(n=400, probes=8):
         v = rng.normal(size=_INDEX.cfg.embed_dim).astype(np.float32)
         v /= np.linalg.norm(v)
         hits = coll.query(
-            vectors=zvec.VectorQuery("embedding", vector=v.tolist()),
+            queries=zvec.Query("embedding", vector=v.tolist()),
             topk=per,
             include_vector=True,
             output_fields=vi._COLL_FIELDS,

@@ -216,6 +216,9 @@ CREATE TABLE reference (
   embedding_id  uuid,                              -- optional: embed title+snippet
   first_seen    timestamptz NOT NULL DEFAULT now(),
   last_seen     timestamptz NOT NULL DEFAULT now(),
+  -- uri is length-capped (<= 2048) by the app before insert; a longer match is a
+  -- minified line / embedded blob, not a real reference, and would overflow this
+  -- btree unique index (Postgres limit ~2704 bytes).
   UNIQUE (kind, uri)
 );
 CREATE INDEX reference_uri_trgm ON reference USING gin (uri gin_trgm_ops);

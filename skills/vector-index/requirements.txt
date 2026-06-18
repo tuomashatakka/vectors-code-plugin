@@ -1,6 +1,8 @@
 # Global project-partitioned local RAG — runtime deps (all local, no API keys)
 zvec>=0.5.0                       # in-process vector store (HNSW + rerank)
 sentence-transformers>=2.2.0     # local embedding + cross-encoder rerank models
+# ^ pulls in PyTorch (~400 MB). macOS gets a CPU/MPS wheel automatically; on Linux
+#   setup.sh pre-installs the CPU-only torch wheel so you skip the multi-GB CUDA build.
 numpy>=1.24                      # PCA / knn for the 3D viewer
 mcp>=1.2.0                       # FastMCP stdio server (the project-aware RAG tools)
 
