@@ -259,17 +259,29 @@ def enqueue(conn, task: str, payload: dict, dedupe_key: str, priority: int = 100
 # Feeder 1: chat transcripts -> session / message
 # ===========================================================================
 def _extract_text(content) -> str:
-    """Tolerant: transcript `content` may be a string or a list of typed parts."""
+    """Tolerant: transcript `content` may be a string, a list of typed parts, or
+    a dict. Tool-result parts nest their own list of blocks, so recurse instead of
+    assuming each part flattens to a string."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         out = []
         for part in content:
-            if isinstance(part, dict):
-                out.append(part.get("text") or part.get("content") or "")
+            if isinstance(part, str):
+                out.append(part)
+            elif isinstance(part, dict):
+                val = part.get("text")
+                if val is None:
+                    val = part.get("content")
+                out.append(val if isinstance(val, str) else _extract_text(val))
             else:
                 out.append(str(part))
         return "\n".join(t for t in out if t)
+    if isinstance(content, dict):
+        val = content.get("text")
+        if val is None:
+            val = content.get("content")
+        return val if isinstance(val, str) else _extract_text(val)
     return ""
 
 
@@ -291,6 +303,10 @@ def _parse_transcript(path: str) -> list[tuple[str, str]]:
                 if role not in ("user", "assistant", "tool"):
                     continue
                 text = _extract_text((m or {}).get("content") if m else ev.get("content"))
+                # Postgres text columns reject NUL (0x00); strip it so transcripts
+                # that embed binary/escape noise still ingest instead of erroring.
+                if "\x00" in text:
+                    text = text.replace("\x00", "")
                 if text.strip():
                     msgs.append((role, text))
     except FileNotFoundError:
@@ -305,28 +321,33 @@ def feed_chats(conn) -> int:
         files.extend(glob.glob(pattern, recursive=True))
     new_total = 0
     for path in sorted(set(files)):
-        msgs = _parse_transcript(path)
-        already = int(seen.get(path, 0))
-        if len(msgs) <= already:
-            continue
-        session_id = det_uuid("session", path)
-        conn.execute(
-            "INSERT INTO session (id, title) VALUES (%s,%s) "
-            "ON CONFLICT (id) DO NOTHING",
-            (session_id, Path(path).stem),
-        )
-        for seq in range(already, len(msgs)):
-            role, text = msgs[seq]
+        try:
+            msgs = _parse_transcript(path)
+            already = int(seen.get(path, 0))
+            if len(msgs) <= already:
+                continue
+            session_id = det_uuid("session", path)
             conn.execute(
-                "INSERT INTO message (id, session_id, role, seq, text, content_hash, token_count) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (session_id, seq) DO NOTHING",
-                (det_uuid("msg", session_id, seq), session_id, role, seq, text,
-                 sha256(text), approx_tokens(text)),
+                "INSERT INTO session (id, title) VALUES (%s,%s) "
+                "ON CONFLICT (id) DO NOTHING",
+                (session_id, Path(path).stem),
             )
-            new_total += 1
-        seen[path] = len(msgs)
+            for seq in range(already, len(msgs)):
+                role, text = msgs[seq]
+                conn.execute(
+                    "INSERT INTO message (id, session_id, role, seq, text, content_hash, token_count) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (session_id, seq) DO NOTHING",
+                    (det_uuid("msg", session_id, seq), session_id, role, seq, text,
+                     sha256(text), approx_tokens(text)),
+                )
+                new_total += 1
+            seen[path] = len(msgs)
+            # persist offsets incrementally so a later bad file never rewinds progress
+            state_set(conn, "chat_offsets", seen)
+        except Exception as e:
+            log(f"chat feeder: skipping {path}: {e!r}")
+            continue
     if new_total:
-        state_set(conn, "chat_offsets", seen)
         log(f"chat feeder: +{new_total} messages")
     return new_total
 

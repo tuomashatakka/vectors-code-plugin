@@ -36,8 +36,14 @@ if [ ! -x "$PYTHON" ]; then
   exit 1
 fi
 echo ">> ensuring daemon deps (psycopg) in the venv"
-"$SKILL_DIR/.venv/bin/pip" install --quiet "psycopg[binary]>=3.1" || {
-  echo "!! failed to install psycopg into the venv" >&2; exit 1; }
+# uv-created venvs ship without pip, so prefer `uv pip` when uv is available.
+if command -v uv >/dev/null 2>&1; then
+  uv pip install --python "$PYTHON" --quiet "psycopg[binary]>=3.1" || {
+    echo "!! failed to install psycopg into the venv" >&2; exit 1; }
+else
+  "$SKILL_DIR/.venv/bin/pip" install --quiet "psycopg[binary]>=3.1" || {
+    echo "!! failed to install psycopg into the venv" >&2; exit 1; }
+fi
 
 DAEMON_PY="$DAEMON_DIR/ukdb_daemon.py"
 mkdir -p "$LOG_DIR"

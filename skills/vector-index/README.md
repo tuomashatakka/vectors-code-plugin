@@ -16,7 +16,7 @@ $VINDEX_HOME            one global RAG database
 ## Quick start
 
 ```bash
-bash setup.sh                                  # .venv + deps
+bash setup.sh                                  # .venv + deps (prompts to install the daemon; -y to auto-accept)
 PY=./.venv/bin/python
 
 # index the project you're standing in (root defaults to the source dir)

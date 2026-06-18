@@ -15,3 +15,6 @@ skills/vector-index/.venv/
 node_modules/
 .logs
 *.log
+
+# local daemon config (contains UKDB_DSN) — never commit
+skills/vector-index/daemon/ukdb-daemon.env
