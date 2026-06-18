@@ -142,6 +142,7 @@
       repo's retrieval automatically — and you can still search <b>globally</b>
       across every project at once.
     </p>
+    <img src="flow.svg" alt="vector-index usage flow: create a project, add sources, ingest, then search per-project or globally — used from the CLI, MCP server, library, or 3D viewer" style="width:100%;height:auto;display:block;margin:20px 0 8px;">
     <pre class="diagram">$VINDEX_HOME            one global RAG database
   ├── scene/            a project — its own collection + config + root
   ├── portfolio/
@@ -201,17 +202,18 @@ global        fan out across projects → merge → one rerank → tagged hits</
 
   <section>
     <h2>Quickstart</h2>
-    <pre><code>cd skills/vector-index &amp;&amp; bash setup.sh        # build the venv, install deps
-PY=./.venv/bin/python
+    <pre><code>bash install.sh                       # build the venv + wire every tool found
+PY=skills/vector-index/.venv/bin/python
+VINDEX=skills/vector-index/scripts/vindex.py
 
 # index the project you're standing in (root defaults to --source)
-$PY scripts/vindex.py create scene --source . --strategy code \
+$PY $VINDEX create scene --source . --strategy code \
     --glob '**/*.ts' --glob '**/*.md'
-$PY scripts/vindex.py ingest
-$PY scripts/vindex.py query "how does the flock pick ideas?"
+$PY $VINDEX ingest
+$PY $VINDEX query "how does the flock pick ideas?"
 
 # ask across every project at once
-$PY scripts/vindex.py search "welded indexed geometry deterministic seed"</code></pre>
+$PY $VINDEX search "welded indexed geometry deterministic seed"</code></pre>
   </section>
 
   <section>

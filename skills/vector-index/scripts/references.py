@@ -27,6 +27,10 @@ _CITATION_RES = [
     re.compile(r"\b[A-Z]{2,6}\s?\d+(?::\d+(?:\.\d+)*)?\b"),    # CODE 3:9.2 / RFC 7231
     re.compile(r"§\s?\d+[a-z]?"),                              # § 36
 ]
+# Real URLs/citations are short. An over-long match is almost always a minified
+# line or an embedded blob — and would overflow the unified-DB's btree
+# UNIQUE(kind, uri) index (~2704-byte limit), killing the extract_references job.
+_MAX_URI = 2048
 
 
 def extract_references(text: str, patterns: list[re.Pattern] | None = None) -> list[dict]:
@@ -35,8 +39,10 @@ def extract_references(text: str, patterns: list[re.Pattern] | None = None) -> l
     seen: set[tuple[str, str]] = set()
 
     def _add(kind: str, uri: str):
+        if not uri or len(uri) > _MAX_URI:
+            return
         key = (kind, uri)
-        if uri and key not in seen:
+        if key not in seen:
             seen.add(key)
             out.append({"kind": kind, "uri": uri})
 

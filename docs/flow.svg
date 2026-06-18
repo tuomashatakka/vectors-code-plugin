@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 450" role="img" aria-labelledby="t d" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <title id="t">vector-index usage flow</title>
+  <desc id="d">Index a project once — create a project, add directory or git sources, then ingest (chunk, embed, store in zvec). Afterwards query it: per-project search or global search across every project, both reranked. Use it from the CLI, the MCP server (Claude Code, opencode, Claude Desktop), the Python library, or the 3D viewer. An optional background daemon keeps projects re-ingested automatically.</desc>
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="8" refX="6.4" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path class="ah" d="M0,0 L7,3.5 L0,7 z"/>
+    </marker>
+  </defs>
+  <style>
+    :root{
+      --card:#ffffff; --line:#dfe3ea; --ink:#161616; --muted:#6b6b6b;
+      --acc:#2752e7; --accfill:#eef2fe; --accink:#1c3aa6;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --card:#161616; --line:#2b2b2b; --ink:#ededed; --muted:#9a9a9a;
+        --acc:#7aa2ff; --accfill:#16213e; --accink:#cdddff;
+      }
+    }
+    .box{ fill:var(--card); stroke:var(--line); stroke-width:1.5; }
+    .acc{ fill:var(--accfill); stroke:var(--acc); stroke-width:1.5; }
+    .t{ fill:var(--ink); font-weight:600; font-size:15px; }
+    .ta{ fill:var(--accink); }
+    .s{ fill:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
+    .cap{ fill:var(--muted); font-size:12px; }
+    .cap2{ fill:var(--muted); font-size:11px; }
+    .hd{ fill:var(--muted); font-family:ui-monospace,Menlo,monospace; font-weight:700; font-size:11px; letter-spacing:.14em; }
+    .flow{ stroke:var(--acc); stroke-width:1.8; fill:none; }
+    .ah{ fill:var(--acc); }
+  </style>
+
+  <!-- section labels -->
+  <text class="hd" x="44" y="44">INDEX · ONCE</text>
+  <text class="hd" x="314" y="170">RETRIEVE · FAST, OFFLINE</text>
+
+  <!-- build pipeline -->
+  <rect class="box" x="44" y="60" width="180" height="66" rx="9"/>
+  <text class="t" x="134" y="91" text-anchor="middle">Create project</text>
+  <text class="s" x="134" y="111" text-anchor="middle">name · root · strategy</text>
+
+  <rect class="box" x="268" y="60" width="180" height="66" rx="9"/>
+  <text class="t" x="358" y="91" text-anchor="middle">Add sources</text>
+  <text class="s" x="358" y="111" text-anchor="middle">dir / git · globs</text>
+
+  <rect class="box" x="492" y="60" width="180" height="66" rx="9"/>
+  <text class="t" x="582" y="91" text-anchor="middle">Ingest</text>
+  <text class="s" x="582" y="111" text-anchor="middle">chunk → embed → zvec</text>
+
+  <line class="flow" x1="224" y1="93" x2="265" y2="93" marker-end="url(#ah)"/>
+  <line class="flow" x1="448" y1="93" x2="489" y2="93" marker-end="url(#ah)"/>
+
+  <!-- ingest -> query -->
+  <line class="flow" x1="582" y1="126" x2="582" y2="173" marker-end="url(#ah)"/>
+
+  <rect class="box" x="492" y="176" width="180" height="66" rx="9"/>
+  <text class="t" x="582" y="207" text-anchor="middle">Query</text>
+  <text class="s" x="582" y="227" text-anchor="middle">embed → top-k</text>
+
+  <!-- branch to results -->
+  <path class="flow" d="M582,242 L582,268 L424,268 L424,297" marker-end="url(#ah)"/>
+  <path class="flow" d="M582,268 L740,268 L740,297" marker-end="url(#ah)"/>
+
+  <rect class="acc" x="314" y="300" width="220" height="66" rx="9"/>
+  <text class="t ta" x="424" y="331" text-anchor="middle">Per-project search</text>
+  <text class="s" x="424" y="351" text-anchor="middle">rerank → ranked hits</text>
+
+  <rect class="acc" x="630" y="300" width="220" height="66" rx="9"/>
+  <text class="t ta" x="740" y="331" text-anchor="middle">Global search</text>
+  <text class="s" x="740" y="351" text-anchor="middle">fan-out → merge → rerank</text>
+
+  <!-- captions -->
+  <text class="cap" x="440" y="402" text-anchor="middle">Use it from — CLI · MCP (Claude Code · opencode · Claude Desktop) · Python library · 3D viewer</text>
+  <text class="cap2" x="440" y="424" text-anchor="middle">↻ optional background daemon keeps every project re-ingested automatically</text>
+</svg>

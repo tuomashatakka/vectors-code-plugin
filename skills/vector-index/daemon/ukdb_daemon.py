@@ -492,7 +492,10 @@ def handle_embed(conn, payload: dict) -> dict:
 def handle_extract_references(conn, payload: dict) -> dict:
     kind, oid = payload["node_kind"], payload["id"]
     text, project_id = _owner_text(conn, kind, oid)
-    urls = list(dict.fromkeys(_URL_RE.findall(text)))[:50]
+    # Cap length: a >2KB "url" is a minified line / embedded blob, not a real
+    # reference, and would overflow the btree UNIQUE(kind, uri) index (~2704 B),
+    # killing this job. Drop them rather than DEAD the whole extraction.
+    urls = [u for u in dict.fromkeys(_URL_RE.findall(text)) if len(u) <= 2048][:50]
     n = 0
     for u in urls:
         ref_id = conn.execute(
