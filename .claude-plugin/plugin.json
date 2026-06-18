@@ -8,5 +8,6 @@
   },
   "homepage": "https://github.com/tuomashatakka/vectors-code-plugin",
   "license": "MIT",
-  "keywords": ["rag", "vector-search", "semantic-search", "embeddings", "mcp", "local-llm", "project"]
+  "keywords": ["rag", "vector-search", "semantic-search", "embeddings", "mcp", "local-llm", "project"],
+  "hooks": "./skills/vector-index/hooks/hooks.json"
 }

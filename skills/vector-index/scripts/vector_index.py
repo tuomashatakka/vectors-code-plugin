@@ -306,7 +306,11 @@ def bm25_path(name: str) -> Path:
 def list_indexes() -> list[str]:
     if not HOME.exists():
         return []
-    return sorted(p.name for p in HOME.iterdir() if (p / "config.json").exists())
+    # `__`-prefixed dirs are reserved internal stores (e.g. __intents__, the
+    # conversation intent memory) — never user projects, so hide them from
+    # listing, status, and global_search.
+    return sorted(p.name for p in HOME.iterdir()
+                  if not p.name.startswith("__") and (p / "config.json").exists())
 
 
 # `project` is the user-facing vocabulary; `index` is the storage primitive.

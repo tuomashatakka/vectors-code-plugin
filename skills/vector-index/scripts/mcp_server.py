@@ -114,6 +114,42 @@ def resolve_reference(uri: str, network: bool = False) -> dict:
 
 
 @mcp.tool()
+def recall_intents(query: str, project: str = "", topk: int = 3,
+                   max_tokens: int = 400) -> dict:
+    """Recall how similar requests were handled before. Looks up the conversation
+    INTENT MEMORY for intents like `query` — scoped to the resolved project with a
+    global fallback — and returns matched prior intents with their frequency and
+    graded resolutions (what worked, and what did NOT resolve it, to avoid), plus a
+    ready-to-inject `injection` block. Read-only; use before answering a recurring
+    request so you can reuse the resolution that previously worked."""
+    import intents  # noqa: E402
+    store = intents.IntentStore.open()
+    try:
+        return store.recall(query, project=_resolve(project), topk=topk,
+                            max_tokens=max_tokens, allow_embed=True)
+    finally:
+        store.close()
+
+
+@mcp.tool()
+def resolve_intent(intent: str, outcome: str, score: float = 1.0,
+                   grader: str = "explicit") -> dict:
+    """Record the OUTCOME of a recalled intent: `outcome` is resolved | partial |
+    unresolved. `intent` is an intent id (i...) or the original message text. Use
+    this to teach the memory which answer actually fixed/answered a request."""
+    if err := guards.deny_if_readonly("resolve_intent"):
+        return err
+    import intents  # noqa: E402
+    iid = intent if (intent.startswith("i") and len(intent) == 31) else \
+        intents.intent_id(intents.normalize_intent(intent))
+    store = intents.IntentStore.open()
+    try:
+        return store.grade(iid, outcome=outcome, score=score, grader=grader)
+    finally:
+        store.close()
+
+
+@mcp.tool()
 def current_project() -> dict:
     """The project that resolves from the server's working directory, plus its
     status. Use this to confirm scope before relying on the default `search`."""

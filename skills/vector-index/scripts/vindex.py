@@ -197,6 +197,86 @@ def _guard_mutation(tool: str):
         sys.exit(3)
 
 
+# ---------------------------------------------------------------------------
+# intent memory — record / recall / grade resolutions of user intents
+# ---------------------------------------------------------------------------
+def _intent_store():
+    import intents  # noqa: E402  (lazy: keeps the rest of the CLI model-free)
+    return intents
+
+
+def cmd_intent_record(a):
+    _guard_mutation("intent record")
+    intents = _intent_store()
+    response = a.response
+    if a.response_file:
+        response = Path(a.response_file).read_text(encoding="utf-8", errors="replace")
+    store = intents.IntentStore.open()
+    try:
+        res = store.record(a.text, project=_resolve_name(a.project), session=a.session or "",
+                           response=response, sync_embed=a.async_embed)
+    finally:
+        store.close()
+    _print(res)
+
+
+def cmd_intent_recall(a):
+    intents = _intent_store()
+    store = intents.IntentStore.open()
+    try:
+        res = store.recall(a.text, project=_resolve_name(a.project), topk=a.topk,
+                          max_tokens=a.max_tokens, allow_embed=not a.no_embed)
+    finally:
+        store.close()
+    if a.json:
+        _print(res)
+    elif res.get("injection"):
+        print(res["injection"])
+    else:
+        print("(no prior intent matched)")
+
+
+def cmd_intent_resolve(a):
+    _guard_mutation("intent resolve")
+    intents = _intent_store()
+    iid = a.intent if a.intent.startswith("i") and len(a.intent) == 31 else \
+        intents.intent_id(intents.normalize_intent(a.intent))
+    store = intents.IntentStore.open()
+    try:
+        _print(store.grade(iid, outcome=a.outcome, score=a.score, grader=a.grader))
+    finally:
+        store.close()
+
+
+def cmd_intent_grade(a):
+    _guard_mutation("intent grade")
+    intents = _intent_store()
+    store = intents.IntentStore.open()
+    try:
+        _print(store.grade_pending(a.transcript, project=_resolve_name(a.project),
+                                  session=a.session or ""))
+    finally:
+        store.close()
+
+
+def cmd_intent_stats(a):
+    intents = _intent_store()
+    store = intents.IntentStore.open()
+    try:
+        rows = store.stats(project=a.project or "", limit=a.limit)
+    finally:
+        store.close()
+    if a.json:
+        _print(rows)
+        return
+    if not rows:
+        print("(no intents recorded yet)")
+        return
+    for r in rows:
+        print(f"  {r['frequency']:>4}x  [{r['project'] or '-'}] {r['best_outcome']:<10} "
+              f"{r['intent_text'][:70]}")
+
+
 def cmd_status(a):
     if a.all:
         _print(vi.project_records())
@@ -371,6 +451,51 @@ def build_parser():
     ev.add_argument("--n", type=int, default=600, help="sampled nodes (default 600)")
     ev.add_argument("--k", type=int, default=3, help="knn links per node (default 3)")
     ev.set_defaults(fn=cmd_export_viewer)
+
+    it = sub.add_parser("intent", help="intent memory: record/recall/grade resolutions")
+    isub = it.add_subparsers(dest="intent_cmd", required=True)
+
+    ir = isub.add_parser("record", help="record a user intent (and optional response)")
+    ir.add_argument("text", help="the user message / intent text")
+    ir.add_argument("--project", help="project (default: resolved from cwd)")
+    ir.add_argument("--session", help="session id")
+    ir.add_argument("--response", help="assistant response to attach as a resolution")
+    ir.add_argument("--response-file", help="read the response from a file")
+    ir.add_argument("--async", dest="async_embed", action="store_true",
+                    help="also embed + (re)build the vector sidecar (slow; for the "
+                         "detached writer the hook spawns)")
+    ir.set_defaults(fn=cmd_intent_record)
+
+    irc = isub.add_parser("recall", help="recall prior resolutions for an intent")
+    irc.add_argument("text", help="the user message / intent text")
+    irc.add_argument("--project", help="project (default: resolved from cwd)")
+    irc.add_argument("--topk", type=int, default=3)
+    irc.add_argument("--max-tokens", type=int, default=0,
+                     help="injection token budget (default: VINDEX_INTENT_MAX_TOKENS)")
+    irc.add_argument("--no-embed", action="store_true",
+                     help="lexical fast-path only (never load the embed model)")
+    irc.add_argument("--json", action="store_true")
+    irc.set_defaults(fn=cmd_intent_recall)
+
+    irs = isub.add_parser("resolve", help="mark an intent's outcome explicitly")
+    irs.add_argument("intent", help="intent id (i...) or intent text")
+    irs.add_argument("--outcome", required=True,
+                     choices=["resolved", "partial", "unresolved"])
+    irs.add_argument("--score", type=float, default=1.0)
+    irs.add_argument("--grader", default="explicit")
+    irs.set_defaults(fn=cmd_intent_resolve)
+
+    ig = isub.add_parser("grade", help="grade pending resolutions from a transcript")
+    ig.add_argument("--transcript", required=True, help="path to a chat transcript (JSONL)")
+    ig.add_argument("--project", help="project (default: resolved from cwd)")
+    ig.add_argument("--session", help="session id")
+    ig.set_defaults(fn=cmd_intent_grade)
+
+    ist = isub.add_parser("stats", help="frequency leaderboard of recorded intents")
+    ist.add_argument("--project", help="filter to one project")
+    ist.add_argument("--limit", type=int, default=25)
+    ist.add_argument("--json", action="store_true")
+    ist.set_defaults(fn=cmd_intent_stats)
 
     pr = sub.add_parser("prompt", help="print a grounding/reasoning prompt scaffold")
     pr.add_argument("name", nargs="?", help="grounded_answer | decompose | citation_contract")

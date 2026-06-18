@@ -202,10 +202,50 @@ reranks, and how to add a chunking strategy or swap the embedding model/store.
   different embedding models. Without rerank, cross-model vector scores are not
   comparable — so rerank is the default for global queries.
 
+## Intent memory (conversation-learning hooks)
+
+Beyond indexing files, the plugin can learn from the *conversation*. Claude Code
+hooks (`hooks/hooks.json`, wired via the plugin manifest) record what you ask,
+how often a similar thing recurs, the assistant's response, and whether it
+resolved your intent — then inject prior known resolutions (and failures to
+avoid) into context *before* the next reply.
+
+- **Store**: local-first SQLite at `$VINDEX_HOME/__intents__/intents.db`
+  (`intent` + `intent_resolution`), no daemon required. A BM25 sidecar (and an
+  optional zvec collection) power recall. The `__intents__` store is reserved and
+  never shows up as a project.
+- **Recall is fast**: `UserPromptSubmit` does a model-free lexical lookup (SQLite
+  exact match + BM25, current project preferred, global fallback) and injects in
+  milliseconds; the embedding + vector write happen in a detached writer.
+- **Grading**: `Stop` grades the finished exchange with a **local Ollama judge**
+  when reachable, else a transcript heuristic (a re-ask ⇒ unresolved, acceptance
+  ⇒ resolved). Override explicitly any time.
+- **CLI / MCP**: `vindex intent record|recall|resolve|grade|stats`; MCP tools
+  `recall_intents` and `resolve_intent`.
+
+```bash
+vindex intent recall "reset the dev database"     # what worked before?
+vindex intent stats                               # frequency leaderboard
+vindex intent resolve "reset the dev database" --outcome resolved
+```
+
+Toggles: `VINDEX_INTENT_DISABLE=1` (hooks become no-ops), `VINDEX_INTENT_SYNC_EMBED=1`
+(semantic recall inline), `VINDEX_INTENT_NO_JUDGE=1` (skip Ollama, heuristic only),
+`VINDEX_INTENT_MIN_SCORE` (inject threshold, default 0.45), `VINDEX_INTENT_MAX_TOKENS`
+(injection budget, default 400). Honors `VINDEX_READONLY` (no learning). When the
+optional daemon runs, the mirror `intent` / `intent_resolution` tables in
+`references/unified-knowledge-db.sql` let it sync intent memory into Postgres.
+
 ## Bundled files
 
 - `scripts/vector_index.py` — core library (config, chunking, store, `Index`,
   `Project`, resolution, `global_search`).
+- `scripts/intents.py` — intent memory: canonicalization, the SQLite store,
+  lexical+vector recall, Ollama/heuristic grading, injection rendering.
+- `scripts/transcript.py` — shared tolerant transcript (JSONL) parsing, used by
+  the grader and the daemon.
+- `hooks/` — `user_prompt_submit.py` (recall + inject), `stop.py` (grade), and
+  `hooks.json` wiring both via `${CLAUDE_PLUGIN_ROOT}`.
 - `scripts/hybrid.py` — BM25 lexical index + RRF fusion + context-prefix (the
   sparse half of hybrid search).
 - `scripts/grounding.py` — confidence tiers + claim verification.
