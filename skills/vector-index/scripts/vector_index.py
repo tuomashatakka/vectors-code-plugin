@@ -455,7 +455,7 @@ def url_for(src: Source, rel: str) -> str | None:
 # ---------------------------------------------------------------------------
 # The index (storage primitive)
 # ---------------------------------------------------------------------------
-_COLL_FIELDS = ["source_id", "source", "title", "chunk", "url", "text"]
+_COLL_FIELDS = ["source_id", "source", "title", "chunk", "url", "text", "unit_type"]
 
 
 class Index:
@@ -497,6 +497,7 @@ class Index:
                 zvec.FieldSchema("chunk", zvec.DataType.INT32),
                 zvec.FieldSchema("url", zvec.DataType.STRING),
                 zvec.FieldSchema("text", zvec.DataType.STRING),
+                zvec.FieldSchema("unit_type", zvec.DataType.STRING),
             ],
             vectors=zvec.VectorSchema(
                 "embedding", zvec.DataType.VECTOR_FP32, self.cfg.embed_dim

@@ -72,7 +72,8 @@ project. A server with no stable cwd (Claude Desktop) should pin one with
 ## Setup (once)
 
 ```bash
-bash setup.sh                       # creates .venv, installs deps
+bash setup.sh                       # creates .venv, installs deps, prompts to install the daemon
+bash setup.sh -y                    # non-interactive: also install the background daemon
 # deps: zvec, sentence-transformers, numpy, mcp
 ```
 

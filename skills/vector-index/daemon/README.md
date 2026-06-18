@@ -45,6 +45,10 @@ iteration implements them) so the queue stays clean.
 
 ## Install (macOS — launchd)
 
+The top-level `bash ../setup.sh` offers to install this daemon at the end (answer
+`Y`, or pass `-y` to auto-accept). You still need `ukdb-daemon.env` configured
+first. To install it directly:
+
 ```bash
 cd skills/vector-index/daemon
 cp ukdb-daemon.env.example ukdb-daemon.env   # then edit: set UKDB_DSN at least
