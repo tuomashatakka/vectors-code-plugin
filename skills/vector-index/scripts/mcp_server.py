@@ -35,6 +35,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vector_index as vi  # noqa: E402
 import references as refs  # noqa: E402
+import guards  # noqa: E402
+import prompts as prompt_lib  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
@@ -45,6 +47,10 @@ def _resolve(project: str) -> str:
     return project or vi.resolve_project_name()
 
 
+def _kinds(kinds: str) -> list[str] | None:
+    return [k.strip() for k in kinds.split(",") if k.strip()] or None
+
+
 def _strip(res: dict) -> dict:
     for r in res.get("results", []):
         r.pop("_vec", None)
@@ -53,30 +59,37 @@ def _strip(res: dict) -> dict:
 
 @mcp.tool()
 def search(query: str, project: str = "", topk: int = 8, rerank: bool = True,
-           hybrid: bool = True) -> dict:
+           hybrid: bool = True, kinds: str = "", max_tokens: int = 0) -> dict:
     """Hybrid semantic + keyword search within ONE project. `project` defaults to
     the one resolved from the working directory. Dense (embeddings) and sparse
     (BM25) results are fused with Reciprocal Rank Fusion, then cross-encoder
     reranked. Each hit is tagged with the signal(s) that found it (`dense`/
-    `lexical`) and the result carries a `confidence` tier (high/medium/low). Set
-    `hybrid=false` for dense only."""
+    `lexical`) and a `unit_type`; the result carries a `confidence` tier. `kinds`
+    is a comma-separated unit_type filter (section/symbol/definition/code/text);
+    `max_tokens` trims results to a token budget. Set `hybrid=false` for dense
+    only."""
     name = _resolve(project)
-    return _strip(vi.Project.load(name).search(query, topk=topk, rerank=rerank, hybrid=hybrid))
+    return _strip(vi.Project.load(name).search(
+        query, topk=topk, rerank=rerank, hybrid=hybrid,
+        kinds=_kinds(kinds), max_tokens=max_tokens))
 
 
 @mcp.tool()
 def search_global(query: str, topk: int = 8, rerank: bool = True, projects: str = "",
-                  hybrid: bool = True, shared: str = "") -> dict:
+                  hybrid: bool = True, shared: str = "", kinds: str = "",
+                  max_tokens: int = 0) -> dict:
     """Hybrid search across EVERY project (or a comma-separated subset via
     `projects`). Each hit is tagged with its project. Pass `shared` (comma-
     separated project names) to treat those as a shared knowledge layer: the query
     intent then weights the shared vs project-scoped layers (Bridge pattern), and
-    hits are tagged with their `layer`. Use this when you don't know which project
-    holds the answer."""
+    hits are tagged with their `layer`. `kinds` filters by unit_type; `max_tokens`
+    trims to a token budget. Use this when you don't know which project holds the
+    answer."""
     subset = [p.strip() for p in projects.split(",") if p.strip()] or None
     shared_list = [p.strip() for p in shared.split(",") if p.strip()] or None
     return _strip(vi.global_search(query, topk=topk, rerank=rerank, projects=subset,
-                                   hybrid=hybrid, shared=shared_list))
+                                   hybrid=hybrid, shared=shared_list,
+                                   kinds=_kinds(kinds), max_tokens=max_tokens))
 
 
 @mcp.tool()
@@ -128,12 +141,16 @@ def project_status(project: str = "") -> dict:
 @mcp.tool()
 def ingest(project: str = "") -> dict:
     """(Re)ingest a project's configured sources into its index."""
+    if err := guards.deny_if_readonly("ingest"):
+        return err
     return vi.Project.load(_resolve(project)).ingest()
 
 
 @mcp.tool()
 def reindex(project: str = "") -> dict:
     """Wipe and rebuild a project's index from its configured sources."""
+    if err := guards.deny_if_readonly("reindex"):
+        return err
     return vi.Project.load(_resolve(project)).ingest(rebuild=True)
 
 
@@ -151,6 +168,10 @@ def create_project(
     it from a cwd (defaults to `source` for a local dir). Optionally attach a
     first source (`source` dir or `git` URL) with comma-separated `globs` and an
     optional `base_url` template (use {path}). Call `ingest` afterwards."""
+    if err := guards.deny_if_readonly("create_project"):
+        return err
+    if err := guards.deny_if_path_blocked("create_project", source or root):
+        return err
     if vi.config_path(name).exists():
         return {"error": f"project {name!r} already exists"}
     use_root = root or (source if source and not git else None)
@@ -183,6 +204,10 @@ def add_source(
 ) -> dict:
     """Add a source (local `source` dir or `git` URL) to a project. `globs` is a
     comma-separated list; `base_url` is an optional {path} URL template."""
+    if err := guards.deny_if_readonly("add_source"):
+        return err
+    if err := guards.deny_if_path_blocked("add_source", source):
+        return err
     name = _resolve(project)
     proj = vi.Project.load(name)
     if not (source or git):
@@ -198,6 +223,23 @@ def add_source(
         base_url=base_url or None,
     ))
     return proj.status()
+
+
+def _register_prompts() -> None:
+    """Expose the grounding/reasoning scaffolds as MCP Prompts, if this FastMCP
+    build supports them (registration is version-guarded so it never breaks
+    startup)."""
+    if not hasattr(mcp, "prompt"):
+        return
+    try:
+        mcp.prompt()(prompt_lib.grounded_answer)
+        mcp.prompt()(prompt_lib.decompose)
+        mcp.prompt()(prompt_lib.citation_contract)
+    except Exception as e:  # pragma: no cover - older/newer API surface
+        print(f"[mcp_server] prompt registration skipped: {e}", file=sys.stderr)
+
+
+_register_prompts()
 
 
 if __name__ == "__main__":
