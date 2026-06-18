@@ -48,9 +48,13 @@ def _resolve_name(project):
 
 def _fmt_results(res: dict):
     scope = res.get("scope", "project")
-    print(f'"{res["query"]}"  ({"reranked" if res.get("reranked") else "vector-only"}, {scope})')
+    mode = "reranked" if res.get("reranked") else "fused" if res.get("hybrid") else "vector-only"
+    retrieval = "hybrid" if res.get("hybrid") else "dense"
+    conf = res.get("confidence", "?")
+    print(f'"{res["query"]}"  ({mode}, {retrieval}, {scope}; confidence={conf})')
     if scope == "global":
-        print(f"  searched: {', '.join(res.get('projects', [])) or '(none)'}")
+        print(f"  searched: {', '.join(res.get('projects', [])) or '(none)'}"
+              f"   intent={res.get('intent', '-')}")
     if not res["results"]:
         print("  (no results)")
         return
@@ -58,7 +62,9 @@ def _fmt_results(res: dict):
         score = r.get("rerank_score", r.get("vector_score"))
         proj = r.get("project", "")
         loc = r.get("url") or r.get("source", "")
-        print(f"  {i}. [{proj}] {r['title']}  ({score})")
+        sig = "+".join(r.get("signals", [])) or "-"
+        layer = f" {r['layer']}" if r.get("layer") else ""
+        print(f"  {i}. [{proj}{layer}] {r['title']}  ({score}, {sig})")
         print(f"     {loc}")
         print(f"     {r['snippet']}")
 
@@ -119,10 +125,12 @@ def cmd_ingest(a):
 def cmd_query(a):
     if a.all_projects or a.projects:
         subset = a.projects.split(",") if a.projects else None
-        res = vi.global_search(a.query, topk=a.topk, rerank=not a.no_rerank, projects=subset)
+        shared = a.shared.split(",") if getattr(a, "shared", None) else None
+        res = vi.global_search(a.query, topk=a.topk, rerank=not a.no_rerank,
+                               projects=subset, hybrid=not a.no_hybrid, shared=shared)
     else:
         res = vi.Project.load(_resolve_name(a.project)).search(
-            a.query, topk=a.topk, rerank=not a.no_rerank
+            a.query, topk=a.topk, rerank=not a.no_rerank, hybrid=not a.no_hybrid
         )
     if a.json:
         for r in res["results"]:
@@ -134,7 +142,9 @@ def cmd_query(a):
 
 def cmd_search(a):
     subset = a.projects.split(",") if a.projects else None
-    res = vi.global_search(a.query, topk=a.topk, rerank=not a.no_rerank, projects=subset)
+    shared = a.shared.split(",") if getattr(a, "shared", None) else None
+    res = vi.global_search(a.query, topk=a.topk, rerank=not a.no_rerank,
+                           projects=subset, hybrid=not a.no_hybrid, shared=shared)
     if a.json:
         _print(res)
     else:
@@ -243,17 +253,25 @@ def build_parser():
     q.add_argument("query")
     q.add_argument("--topk", type=int, default=8)
     q.add_argument("--no-rerank", action="store_true")
+    q.add_argument("--no-hybrid", action="store_true",
+                   help="dense only (skip the BM25 lexical leg + fusion)")
     q.add_argument("--json", action="store_true")
     q.add_argument("-A", "--all-projects", action="store_true",
                    help="search across all projects (global)")
     q.add_argument("--projects", help="comma-separated subset for global search")
+    q.add_argument("--shared", help="comma-separated projects to treat as the "
+                                    "shared knowledge layer (Bridge weighting)")
     q.set_defaults(fn=cmd_query)
 
     sr = sub.add_parser("search", help="GLOBAL search across every project")
     sr.add_argument("query")
     sr.add_argument("--topk", type=int, default=8)
     sr.add_argument("--no-rerank", action="store_true")
+    sr.add_argument("--no-hybrid", action="store_true",
+                    help="dense only (skip the BM25 lexical leg + fusion)")
     sr.add_argument("--projects", help="comma-separated subset of projects")
+    sr.add_argument("--shared", help="comma-separated projects to treat as the "
+                                     "shared knowledge layer (Bridge weighting)")
     sr.add_argument("--json", action="store_true")
     sr.set_defaults(fn=cmd_search)
 

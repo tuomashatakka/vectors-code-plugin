@@ -66,6 +66,14 @@ import numpy as np
 import zvec
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
+# Local capability modules (stdlib-only — safe even without the model stack).
+# Ensure this script's directory is importable when vector_index is imported as a
+# top-level module from elsewhere.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import hybrid as hybridlib  # noqa: E402  (lexical BM25 + RRF fusion)
+import grounding  # noqa: E402            (confidence tiers + claim verification)
+import orchestration  # noqa: E402        (Bridge-pattern layer weighting)
+
 # ---------------------------------------------------------------------------
 # Locations & defaults (all overridable via env)
 # ---------------------------------------------------------------------------
@@ -231,6 +239,7 @@ class ChunkConfig:
     min_chars: int = 200
     max_chars: int = 1500
     overlap: int = 150
+    context_prefix: bool = True  # prepend "title — path" to a chunk's embedded text
 
 
 @dataclass
@@ -286,6 +295,10 @@ def index_path(name: str) -> str:
 
 def config_path(name: str) -> Path:
     return index_dir(name) / "config.json"
+
+
+def bm25_path(name: str) -> Path:
+    return index_dir(name) / "bm25.json.gz"
 
 
 def list_indexes() -> list[str]:
@@ -447,6 +460,12 @@ class Index:
     def __init__(self, cfg: IndexConfig):
         self.cfg = cfg
         self._coll = None
+        self._bm25_cache = "unset"  # lazy-loaded BM25 sidecar (None if none built)
+
+    def _load_bm25(self):
+        if self._bm25_cache == "unset":
+            self._bm25_cache = hybridlib.BM25Index.load(bm25_path(self.cfg.name))
+        return self._bm25_cache
 
     # -- lifecycle ----------------------------------------------------------
     @classmethod
@@ -502,12 +521,15 @@ class Index:
             import shutil
 
             shutil.rmtree(index_path(self.cfg.name), ignore_errors=True)
+            bm25_path(self.cfg.name).unlink(missing_ok=True)
             self._coll = None
+            self._bm25_cache = "unset"
         coll = self.open()
         embedder = get_embedder(self.cfg.embed_model)
 
-        # Phase 1: gather chunks across all sources.
-        pending = []  # (text, source_id, rel, title, ci, url)
+        # Phase 1: gather chunks across all sources. We embed (and lexically index)
+        # the context-enriched text but STORE the raw chunk for display.
+        pending = []  # (embed_text, source_id, rel, title, ci, url, raw_text)
         n_files = 0
         for src in self.cfg.sources:
             for full, rel in iter_files(self.cfg.name, src):
@@ -519,14 +541,17 @@ class Index:
                 url = url_for(src, rel)
                 for ci, ch in enumerate(chunk_file(rel, content, self.cfg.chunk)):
                     title = _title_for(ch, rel)
-                    pending.append((ch, src.id, rel, title, ci, url))
+                    etext = (hybridlib.context_prefix(title, rel, ch)
+                             if self.cfg.chunk.context_prefix else ch)
+                    pending.append((etext, src.id, rel, title, ci, url, ch))
         print(f"  {n_files} files -> {len(pending)} chunks", flush=True)
         if not pending:
             return {"files": 0, "chunks": 0}
 
-        # Phase 2: embed + insert in batches.
+        # Phase 2: embed + insert in batches; collect items for the BM25 sidecar.
         total = 0
         batch: list = []
+        bm25_items: list[tuple[str, str, dict]] = []  # (doc_id, embed_text, fields)
 
         def flush():
             nonlocal batch, total
@@ -543,22 +568,21 @@ class Index:
                 normalize_embeddings=True,
                 show_progress_bar=False,
             )
-            for (text, sid, rel, title, ci, url), emb in zip(window, vecs):
+            for (etext, sid, rel, title, ci, url, raw), emb in zip(window, vecs):
                 doc_id = "v" + hashlib.sha256(f"{sid}\0{rel}\0{ci}".encode()).hexdigest()[:30]
+                fields = {
+                    "source_id": sid,
+                    "source": rel,
+                    "title": title,
+                    "chunk": ci,
+                    "url": url or "",
+                    "text": raw,
+                }
                 batch.append(
-                    zvec.Doc(
-                        id=doc_id,
-                        vectors={"embedding": emb.tolist()},
-                        fields={
-                            "source_id": sid,
-                            "source": rel,
-                            "title": title,
-                            "chunk": ci,
-                            "url": url or "",
-                            "text": text,
-                        },
-                    )
+                    zvec.Doc(id=doc_id, vectors={"embedding": emb.tolist()}, fields=fields)
                 )
+                # Lexically index the context-enriched text; carry render fields.
+                bm25_items.append((doc_id, etext, fields))
                 if len(batch) >= insert_batch:
                     flush()
         flush()
@@ -567,11 +591,21 @@ class Index:
             coll.flush()
         if hasattr(coll, "optimize"):
             coll.optimize()
+        # Build + persist the BM25 sidecar that powers hybrid (dense+sparse) search.
+        hybridlib.BM25Index().build(bm25_items).save(bm25_path(self.cfg.name))
+        self._bm25_cache = "unset"
         print(f"\n  done: {total} chunks -> {index_path(self.cfg.name)}", flush=True)
         return {"files": n_files, "chunks": total}
 
     # -- search -------------------------------------------------------------
-    def search(self, query: str, topk: int = 8, rerank: bool = True, fetch_k: int = 0):
+    def search(self, query: str, topk: int = 8, rerank: bool = True, fetch_k: int = 0,
+               hybrid: bool = True):
+        """Hybrid retrieval: dense (zvec) + sparse (BM25), fused with Reciprocal
+        Rank Fusion, then cross-encoder reranked. `hybrid=False` (or a project with
+        no BM25 sidecar — e.g. indexed before this feature) falls back to dense.
+        Each result is tagged with the signal(s) that found it, and the result set
+        carries a confidence tier.
+        """
         coll = self.open()
         fetch_k = fetch_k or max(topk * 4, 24)
         emb = get_embedder(self.cfg.embed_model).encode(
@@ -583,23 +617,58 @@ class Index:
             include_vector=True,
             output_fields=_COLL_FIELDS,
         )
-        items = []
+        by_id: dict = {}
+        dense_ids: list[str] = []
         for h in hits:
             text = h.field("text") or ""
-            items.append(
-                {
-                    "id": h.id,
-                    "source_id": h.field("source_id") or "",
-                    "source": h.field("source") or "",
-                    "title": h.field("title") or h.field("source") or "",
-                    "url": h.field("url") or None,
-                    "chunk": h.field("chunk") or 0,
-                    "vector_score": float(h.score),
-                    "text": text,
-                    "snippet": " ".join(text.split())[:240],
-                    "_vec": h.vector("embedding"),
-                }
-            )
+            by_id[h.id] = {
+                "id": h.id,
+                "source_id": h.field("source_id") or "",
+                "source": h.field("source") or "",
+                "title": h.field("title") or h.field("source") or "",
+                "url": h.field("url") or None,
+                "chunk": h.field("chunk") or 0,
+                "vector_score": float(h.score),
+                "text": text,
+                "snippet": " ".join(text.split())[:240],
+                "signals": ["dense"],
+                "_vec": h.vector("embedding"),
+            }
+            dense_ids.append(h.id)
+
+        order = dense_ids
+        lex_ids: list[str] = []
+        if hybrid:
+            bm = self._load_bm25()
+            if bm is not None:
+                for did, sc in bm.search(query, topk=fetch_k):
+                    lex_ids.append(did)
+                    if did in by_id:
+                        by_id[did]["signals"].append("lexical")
+                        by_id[did]["bm25_score"] = round(float(sc), 4)
+                    else:
+                        f = bm.docs.get(did)
+                        if not f:
+                            continue
+                        txt = f.get("text", "")
+                        by_id[did] = {
+                            "id": did,
+                            "source_id": f.get("source_id", ""),
+                            "source": f.get("source", ""),
+                            "title": f.get("title") or f.get("source", ""),
+                            "url": f.get("url") or None,
+                            "chunk": f.get("chunk", 0),
+                            "vector_score": None,
+                            "bm25_score": round(float(sc), 4),
+                            "text": txt,
+                            "snippet": " ".join(txt.split())[:240],
+                            "signals": ["lexical"],
+                            "_vec": None,
+                        }
+                if lex_ids:
+                    order = [d for d, _ in hybridlib.rrf_fuse([dense_ids, lex_ids])]
+
+        items = [by_id[d] for d in order if d in by_id]
         reranked = False
         if rerank and items:
             ce = get_reranker(self.cfg.rerank_model)
@@ -609,7 +678,13 @@ class Index:
             items.sort(key=lambda r: r["rerank_score"], reverse=True)
             reranked = True
         items = items[:topk]
-        return {"query": query, "reranked": reranked, "results": items}
+        return {
+            "query": query,
+            "reranked": reranked,
+            "hybrid": bool(hybrid and lex_ids),
+            "confidence": grounding.confidence_tier(items, reranked),
+            "results": items,
+        }
 
     # -- status -------------------------------------------------------------
     def doc_count(self) -> int:
@@ -722,8 +797,10 @@ class Project:
     def ingest(self, **kw) -> dict:
         return self.index.ingest(**kw)
 
-    def search(self, query: str, topk: int = 8, rerank: bool = True, fetch_k: int = 0) -> dict:
-        res = self.index.search(query, topk=topk, rerank=rerank, fetch_k=fetch_k)
+    def search(self, query: str, topk: int = 8, rerank: bool = True, fetch_k: int = 0,
+               hybrid: bool = True) -> dict:
+        res = self.index.search(query, topk=topk, rerank=rerank, fetch_k=fetch_k,
+                                hybrid=hybrid)
         res["project"] = self.name
         for r in res["results"]:
             r["project"] = self.name
@@ -762,19 +839,29 @@ def global_search(
     rerank: bool = True,
     projects: list[str] | None = None,
     per_project: int = 0,
+    hybrid: bool = True,
+    shared: list[str] | None = None,
 ) -> dict:
     """Search across every project (or a named subset) and merge the results.
 
-    Each candidate is tagged with its `project`. When `rerank` is on, the
-    cross-encoder scores all candidates from all projects together, so the
-    final ordering is comparable across projects even if they use different
-    embedding models. Without rerank we fall back to per-project vector scores,
-    which are *not* comparable across differing embed models — so rerank is the
-    recommended (and default) mode for global queries.
+    Each project is a hybrid (dense+sparse) layer; per-project candidate lists are
+    fused across projects with Reciprocal Rank Fusion, then the cross-encoder
+    scores the union (so ordering is comparable across projects with different
+    embedding models — the recommended, default mode).
+
+    **Bridge orchestration**: pass `shared=[...]` to mark some projects as the
+    shared knowledge layer. The query intent ("our X" vs "the standard X") then
+    weights the scoped vs shared layers in the fusion, and every hit is tagged with
+    its `layer`. With no `shared` layer this is the original equal-weight Pool.
     """
     names = projects or list_projects()
     per_project = per_project or max(topk * 3, 12)
-    pool: list[dict] = []
+    intent = orchestration.classify_query_intent(query)
+    weights_map = orchestration.project_weights(names, shared, intent)
+
+    pool: dict[str, dict] = {}
+    rankings: list[list[str]] = []
+    ranking_weights: list[float] = []
     searched: list[str] = []
     for name in names:
         try:
@@ -784,33 +871,45 @@ def global_search(
         if not os.path.exists(index_path(name)):
             continue
         # Pull a generous candidate set per project; defer ranking to the union.
-        res = proj.search(query, topk=per_project, rerank=False)
-        pool.extend(res["results"])
+        res = proj.search(query, topk=per_project, rerank=False, hybrid=hybrid)
+        ids: list[str] = []
+        for r in res["results"]:
+            r["layer"] = orchestration.layer_of(name, shared)
+            pool.setdefault(r["id"], r)
+            ids.append(r["id"])
+        if ids:
+            rankings.append(ids)
+            ranking_weights.append(weights_map.get(name, 1.0))
         searched.append(name)
 
     if not pool:
-        return {"query": query, "scope": "global", "reranked": False,
-                "projects": searched, "results": []}
+        return {"query": query, "scope": "global", "reranked": False, "hybrid": hybrid,
+                "intent": intent, "projects": searched, "confidence": "low", "results": []}
+
+    # Fuse across projects (Bridge weighting) to order the candidate union.
+    fused_order = [d for d, _ in hybridlib.rrf_fuse(rankings, ranking_weights)]
+    candidates = [pool[d] for d in fused_order if d in pool]
 
     reranked = False
     if rerank:
         ce = get_reranker(DEFAULT_RERANK_MODEL)
-        scores = ce.predict([(query, (it["text"] or it["title"])[:2000]) for it in pool])
-        for it, s in zip(pool, scores):
+        scores = ce.predict([(query, (it["text"] or it["title"])[:2000]) for it in candidates])
+        for it, s in zip(candidates, scores):
             it["rerank_score"] = round(float(s), 4)
-        pool.sort(key=lambda r: r["rerank_score"], reverse=True)
+        candidates.sort(key=lambda r: r["rerank_score"], reverse=True)
         reranked = True
-    else:
-        pool.sort(key=lambda r: r.get("vector_score", 0.0), reverse=True)
 
-    results = pool[:topk]
+    results = candidates[:topk]
     for r in results:
         r.pop("_vec", None)
     return {
         "query": query,
         "scope": "global",
         "reranked": reranked,
+        "hybrid": hybrid,
+        "intent": intent,
         "projects": searched,
+        "confidence": grounding.confidence_tier(results, reranked),
         "results": results,
     }
 
