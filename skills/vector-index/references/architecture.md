@@ -208,3 +208,13 @@ real embeddings to 3D, and builds knn "synapse" links from cosine similarity.
 `/api/search` projects new hits into the same PCA basis and reports their nearest
 sampled neighbours so the viewer can splice them in. It reads the stored
 `text`/`title`/`url` fields, so it works for any project with no per-domain code.
+
+**Running without a server.** `assets/viewer.html` picks one of three data sources
+at boot: the live JSON API (above); a baked `window.VINDEX_DATA` (`{status, graph}`)
+for a fully offline file; or a procedural `window.VINDEX_DEMO` cloud. Offline search
+is a client-side lexical match over the baked node fields (there are no embeddings
+in the page). `viewer_server.export_static(out, project)` — exposed as
+`vindex export-viewer` — bakes a project's PCA graph into a standalone HTML you can
+open directly or host statically. `scripts/make_demo_viewer.py` injects the demo
+flag to produce `docs/viewer-demo.html`, the live preview embedded on the project's
+GitHub Pages site.

@@ -117,6 +117,7 @@ $PY scripts/vindex.py here            # which project does this dir resolve to?
 $PY scripts/vindex.py status --all    # status of every project
 $PY scripts/vindex.py reindex scene   # wipe + rebuild
 $PY scripts/vindex.py serve  scene    # 3D viewer -> http://localhost:7341
+$PY scripts/vindex.py export-viewer scene -o scene.html   # standalone viewer (no server)
 ```
 
 Add `--no-rerank` for raw vector order (faster, skips the cross-encoder).
@@ -215,8 +216,12 @@ reranks, and how to add a chunking strategy or swap the embedding model/store.
 - `scripts/prompts.py` — grounding/reasoning prompt scaffolds.
 - `scripts/vindex.py` — CLI.
 - `scripts/mcp_server.py` — FastMCP stdio server (project-aware tools).
-- `scripts/viewer_server.py` — JSON API + viewer host.
-- `assets/viewer.html` — 3D synapse navigator.
+- `scripts/viewer_server.py` — JSON API + viewer host; `export_static` bakes a
+  project into a standalone (no-server) viewer.
+- `scripts/make_demo_viewer.py` — generate the docs-site demo viewer (demo mode).
+- `assets/viewer.html` — 3D synapse navigator. Runs against `viewer_server.py`,
+  or fully offline from baked `window.VINDEX_DATA` (`export-viewer`) or a
+  procedural demo (`window.VINDEX_DEMO`).
 - `references/architecture.md` — internals, schema, extension points.
 - `references/unified-knowledge-db-spec.md` — design for a unified PostgreSQL +
   pgvector store (vectors + chat memory + external references + own content) with

@@ -180,6 +180,41 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
 
+_THREE_MARKER = '<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js'
+
+
+def export_static(out_path: str | Path, index_name: str | None = None,
+                  n: int = 600, k: int = 3) -> dict:
+    """Bake a project's PCA graph into a self-contained viewer HTML that needs no
+    server — open the file directly or host it statically. The data is injected as
+    `window.VINDEX_DATA` before the viewer script, so it renders offline (with
+    client-side lexical search)."""
+    global _INDEX
+    name = index_name or vi.resolve_project_name()
+    _INDEX = vi.Index.load(name)
+    graph = build_graph(n=n, k=k)
+    st = _INDEX.status()
+    payload = {
+        "status": {
+            "name": st.get("name"),
+            "doc_count": st.get("doc_count"),
+            "embed_model": st.get("embed_model"),
+            "state": st.get("state"),
+        },
+        "graph": {
+            "nodes": graph["nodes"],
+            "links": [[a, b] for a, b, *_ in graph["links"]],
+        },
+    }
+    html = HTML_PATH.read_text(encoding="utf-8")
+    inject = "<script>window.VINDEX_DATA=" + json.dumps(payload) + ";</script>\n"
+    html = html.replace(_THREE_MARKER, inject + _THREE_MARKER, 1)
+    out = Path(os.path.expanduser(str(out_path)))
+    out.write_text(html, encoding="utf-8")
+    return {"project": name, "nodes": len(payload["graph"]["nodes"]),
+            "links": len(payload["graph"]["links"]), "out": str(out)}
+
+
 def main(index_name: str | None = None):
     global _INDEX
     name = index_name or vi.resolve_project_name()
