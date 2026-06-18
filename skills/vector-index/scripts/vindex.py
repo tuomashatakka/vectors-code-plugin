@@ -33,6 +33,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vector_index as vi  # noqa: E402
+import guards  # noqa: E402
+import prompts as prompt_lib  # noqa: E402
 
 sys.stdout.reconfigure(line_buffering=True)
 
@@ -55,6 +57,8 @@ def _fmt_results(res: dict):
     if scope == "global":
         print(f"  searched: {', '.join(res.get('projects', [])) or '(none)'}"
               f"   intent={res.get('intent', '-')}")
+    if "tokens" in res:
+        print(f"  assembled within budget: ~{res['tokens']} tokens")
     if not res["results"]:
         print("  (no results)")
         return
@@ -64,7 +68,9 @@ def _fmt_results(res: dict):
         loc = r.get("url") or r.get("source", "")
         sig = "+".join(r.get("signals", [])) or "-"
         layer = f" {r['layer']}" if r.get("layer") else ""
-        print(f"  {i}. [{proj}{layer}] {r['title']}  ({score}, {sig})")
+        kind = r.get("unit_type", "")
+        kind = f" {kind}" if kind else ""
+        print(f"  {i}. [{proj}{layer}]{kind} {r['title']}  ({score}, {sig})")
         print(f"     {loc}")
         print(f"     {r['snippet']}")
 
@@ -91,6 +97,11 @@ def _make_source(a):
 
 
 def cmd_create(a):
+    _guard_mutation("create")
+    if a.source:
+        err = guards.deny_if_path_blocked("create", a.source)
+        if err:
+            print(err["error"], file=sys.stderr); sys.exit(3)
     chunk = vi.ChunkConfig(strategy=a.strategy, max_chars=a.max_chars, overlap=a.overlap)
     kw = dict(chunk=chunk)
     if a.embed_model:
@@ -111,26 +122,35 @@ def cmd_create(a):
 
 
 def cmd_add_source(a):
+    _guard_mutation("add-source")
+    if a.source:
+        err = guards.deny_if_path_blocked("add-source", a.source)
+        if err:
+            print(err["error"], file=sys.stderr); sys.exit(3)
     proj = vi.Project.load(_resolve_name(a.project))
     proj.add_source(_make_source(a))
     print(f"source added to {proj.name!r}: {a.git or a.source}")
 
 
 def cmd_ingest(a):
+    _guard_mutation("ingest")
     name = _resolve_name(a.project)
     print(f"ingesting project: {name}", flush=True)
     _print(vi.Project.load(name).ingest(rebuild=a.rebuild))
 
 
 def cmd_query(a):
+    kinds = a.kind or None
     if a.all_projects or a.projects:
         subset = a.projects.split(",") if a.projects else None
         shared = a.shared.split(",") if getattr(a, "shared", None) else None
         res = vi.global_search(a.query, topk=a.topk, rerank=not a.no_rerank,
-                               projects=subset, hybrid=not a.no_hybrid, shared=shared)
+                               projects=subset, hybrid=not a.no_hybrid, shared=shared,
+                               kinds=kinds, max_tokens=a.max_tokens)
     else:
         res = vi.Project.load(_resolve_name(a.project)).search(
-            a.query, topk=a.topk, rerank=not a.no_rerank, hybrid=not a.no_hybrid
+            a.query, topk=a.topk, rerank=not a.no_rerank, hybrid=not a.no_hybrid,
+            kinds=kinds, max_tokens=a.max_tokens
         )
     if a.json:
         for r in res["results"]:
@@ -144,11 +164,37 @@ def cmd_search(a):
     subset = a.projects.split(",") if a.projects else None
     shared = a.shared.split(",") if getattr(a, "shared", None) else None
     res = vi.global_search(a.query, topk=a.topk, rerank=not a.no_rerank,
-                           projects=subset, hybrid=not a.no_hybrid, shared=shared)
+                           projects=subset, hybrid=not a.no_hybrid, shared=shared,
+                           kinds=a.kind or None, max_tokens=a.max_tokens)
     if a.json:
         _print(res)
     else:
         _fmt_results(res)
+
+
+def cmd_prompt(a):
+    if a.list or not a.name:
+        print("available scaffolds: " + ", ".join(prompt_lib.TEMPLATES))
+        return
+    kw = {}
+    if a.question:
+        kw["question"] = a.question
+    if a.context:
+        kw["context"] = a.context
+    if a.task:
+        kw["task"] = a.task
+    try:
+        print(prompt_lib.render(a.name, **kw))
+    except (KeyError, TypeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(2)
+
+
+def _guard_mutation(tool: str):
+    err = guards.deny_if_readonly(tool)
+    if err:
+        print(err["error"], file=sys.stderr)
+        sys.exit(3)
 
 
 def cmd_status(a):
@@ -191,6 +237,7 @@ def cmd_list(a):
 
 
 def cmd_reindex(a):
+    _guard_mutation("reindex")
     name = _resolve_name(a.project)
     print(f"reindexing project: {name}", flush=True)
     _print(vi.Project.load(name).ingest(rebuild=True))
@@ -255,6 +302,10 @@ def build_parser():
     q.add_argument("--no-rerank", action="store_true")
     q.add_argument("--no-hybrid", action="store_true",
                    help="dense only (skip the BM25 lexical leg + fusion)")
+    q.add_argument("--kind", action="append",
+                   help="filter by unit_type (repeatable): section|symbol|definition|code|text")
+    q.add_argument("--max-tokens", type=int, default=0,
+                   help="trim results to a token budget")
     q.add_argument("--json", action="store_true")
     q.add_argument("-A", "--all-projects", action="store_true",
                    help="search across all projects (global)")
@@ -269,6 +320,10 @@ def build_parser():
     sr.add_argument("--no-rerank", action="store_true")
     sr.add_argument("--no-hybrid", action="store_true",
                     help="dense only (skip the BM25 lexical leg + fusion)")
+    sr.add_argument("--kind", action="append",
+                    help="filter by unit_type (repeatable): section|symbol|definition|code|text")
+    sr.add_argument("--max-tokens", type=int, default=0,
+                    help="trim results to a token budget")
     sr.add_argument("--projects", help="comma-separated subset of projects")
     sr.add_argument("--shared", help="comma-separated projects to treat as the "
                                      "shared knowledge layer (Bridge weighting)")
@@ -298,6 +353,14 @@ def build_parser():
     v.add_argument("project", nargs="?", help="project (default: resolved from cwd)")
     v.add_argument("--port", type=int, default=0)
     v.set_defaults(fn=cmd_serve)
+
+    pr = sub.add_parser("prompt", help="print a grounding/reasoning prompt scaffold")
+    pr.add_argument("name", nargs="?", help="grounded_answer | decompose | citation_contract")
+    pr.add_argument("--question", help="for grounded_answer")
+    pr.add_argument("--context", help="for grounded_answer")
+    pr.add_argument("--task", help="for decompose")
+    pr.add_argument("--list", action="store_true", help="list available scaffolds")
+    pr.set_defaults(fn=cmd_prompt)
 
     return p
 

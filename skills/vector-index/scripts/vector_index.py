@@ -73,6 +73,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hybrid as hybridlib  # noqa: E402  (lexical BM25 + RRF fusion)
 import grounding  # noqa: E402            (confidence tiers + claim verification)
 import orchestration  # noqa: E402        (Bridge-pattern layer weighting)
+import units  # noqa: E402                (typed semantic units)
+import assemble  # noqa: E402             (token-budget context assembly)
 
 # ---------------------------------------------------------------------------
 # Locations & defaults (all overridable via env)
@@ -577,6 +579,7 @@ class Index:
                     "chunk": ci,
                     "url": url or "",
                     "text": raw,
+                    "unit_type": units.classify_unit(rel, raw, self.cfg.chunk.strategy),
                 }
                 batch.append(
                     zvec.Doc(id=doc_id, vectors={"embedding": emb.tolist()}, fields=fields)
@@ -599,15 +602,17 @@ class Index:
 
     # -- search -------------------------------------------------------------
     def search(self, query: str, topk: int = 8, rerank: bool = True, fetch_k: int = 0,
-               hybrid: bool = True):
+               hybrid: bool = True, kinds: list[str] | None = None, max_tokens: int = 0):
         """Hybrid retrieval: dense (zvec) + sparse (BM25), fused with Reciprocal
         Rank Fusion, then cross-encoder reranked. `hybrid=False` (or a project with
         no BM25 sidecar — e.g. indexed before this feature) falls back to dense.
-        Each result is tagged with the signal(s) that found it, and the result set
-        carries a confidence tier.
+        Each result is tagged with the signal(s) that found it and a `unit_type`;
+        the result set carries a confidence tier. `kinds` filters by unit_type;
+        `max_tokens` trims the final results to a token budget.
         """
         coll = self.open()
         fetch_k = fetch_k or max(topk * 4, 24)
+        bm = self._load_bm25()
         emb = get_embedder(self.cfg.embed_model).encode(
             query, normalize_embeddings=True
         ).tolist()
@@ -638,37 +643,44 @@ class Index:
 
         order = dense_ids
         lex_ids: list[str] = []
-        if hybrid:
-            bm = self._load_bm25()
-            if bm is not None:
-                for did, sc in bm.search(query, topk=fetch_k):
-                    lex_ids.append(did)
-                    if did in by_id:
-                        by_id[did]["signals"].append("lexical")
-                        by_id[did]["bm25_score"] = round(float(sc), 4)
-                    else:
-                        f = bm.docs.get(did)
-                        if not f:
-                            continue
-                        txt = f.get("text", "")
-                        by_id[did] = {
-                            "id": did,
-                            "source_id": f.get("source_id", ""),
-                            "source": f.get("source", ""),
-                            "title": f.get("title") or f.get("source", ""),
-                            "url": f.get("url") or None,
-                            "chunk": f.get("chunk", 0),
-                            "vector_score": None,
-                            "bm25_score": round(float(sc), 4),
-                            "text": txt,
-                            "snippet": " ".join(txt.split())[:240],
-                            "signals": ["lexical"],
-                            "_vec": None,
-                        }
-                if lex_ids:
-                    order = [d for d, _ in hybridlib.rrf_fuse([dense_ids, lex_ids])]
+        if hybrid and bm is not None:
+            for did, sc in bm.search(query, topk=fetch_k):
+                lex_ids.append(did)
+                if did in by_id:
+                    by_id[did]["signals"].append("lexical")
+                    by_id[did]["bm25_score"] = round(float(sc), 4)
+                else:
+                    f = bm.docs.get(did)
+                    if not f:
+                        continue
+                    txt = f.get("text", "")
+                    by_id[did] = {
+                        "id": did,
+                        "source_id": f.get("source_id", ""),
+                        "source": f.get("source", ""),
+                        "title": f.get("title") or f.get("source", ""),
+                        "url": f.get("url") or None,
+                        "chunk": f.get("chunk", 0),
+                        "vector_score": None,
+                        "bm25_score": round(float(sc), 4),
+                        "text": txt,
+                        "snippet": " ".join(txt.split())[:240],
+                        "signals": ["lexical"],
+                        "_vec": None,
+                    }
+            if lex_ids:
+                order = [d for d, _ in hybridlib.rrf_fuse([dense_ids, lex_ids])]
 
         items = [by_id[d] for d in order if d in by_id]
+        # Typed units (C1): tag each item, preferring the sidecar's stored type.
+        for it in items:
+            f = bm.docs.get(it["id"]) if bm is not None else None
+            it["unit_type"] = ((f or {}).get("unit_type")
+                               or units.classify_unit(it["source"], it["text"], "auto"))
+        if kinds:
+            kset = set(kinds)
+            items = [it for it in items if it["unit_type"] in kset]
+
         reranked = False
         if rerank and items:
             ce = get_reranker(self.cfg.rerank_model)
@@ -678,13 +690,16 @@ class Index:
             items.sort(key=lambda r: r["rerank_score"], reverse=True)
             reranked = True
         items = items[:topk]
-        return {
+        res = {
             "query": query,
             "reranked": reranked,
             "hybrid": bool(hybrid and lex_ids),
             "confidence": grounding.confidence_tier(items, reranked),
             "results": items,
         }
+        if max_tokens:  # token-budget assembly (C7)
+            res["results"], res["tokens"] = assemble.assemble_within_budget(items, max_tokens)
+        return res
 
     # -- status -------------------------------------------------------------
     def doc_count(self) -> int:
@@ -798,9 +813,10 @@ class Project:
         return self.index.ingest(**kw)
 
     def search(self, query: str, topk: int = 8, rerank: bool = True, fetch_k: int = 0,
-               hybrid: bool = True) -> dict:
+               hybrid: bool = True, kinds: list[str] | None = None,
+               max_tokens: int = 0) -> dict:
         res = self.index.search(query, topk=topk, rerank=rerank, fetch_k=fetch_k,
-                                hybrid=hybrid)
+                                hybrid=hybrid, kinds=kinds, max_tokens=max_tokens)
         res["project"] = self.name
         for r in res["results"]:
             r["project"] = self.name
@@ -841,6 +857,8 @@ def global_search(
     per_project: int = 0,
     hybrid: bool = True,
     shared: list[str] | None = None,
+    kinds: list[str] | None = None,
+    max_tokens: int = 0,
 ) -> dict:
     """Search across every project (or a named subset) and merge the results.
 
@@ -871,7 +889,7 @@ def global_search(
         if not os.path.exists(index_path(name)):
             continue
         # Pull a generous candidate set per project; defer ranking to the union.
-        res = proj.search(query, topk=per_project, rerank=False, hybrid=hybrid)
+        res = proj.search(query, topk=per_project, rerank=False, hybrid=hybrid, kinds=kinds)
         ids: list[str] = []
         for r in res["results"]:
             r["layer"] = orchestration.layer_of(name, shared)
@@ -902,7 +920,7 @@ def global_search(
     results = candidates[:topk]
     for r in results:
         r.pop("_vec", None)
-    return {
+    out = {
         "query": query,
         "scope": "global",
         "reranked": reranked,
@@ -912,6 +930,9 @@ def global_search(
         "confidence": grounding.confidence_tier(results, reranked),
         "results": results,
     }
+    if max_tokens:  # token-budget assembly (C7)
+        out["results"], out["tokens"] = assemble.assemble_within_budget(results, max_tokens)
+    return out
 
 
 # ---------------------------------------------------------------------------

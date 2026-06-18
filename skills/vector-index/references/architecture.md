@@ -160,6 +160,18 @@ stdlib-only sidecar modules so the heavy model stack stays isolated:
   references in text against the corpus via an injected `search_fn`, flag misses
   `[UNVERIFIED]`), `resolve_reference` (opt-in network HEAD check). Exposed as MCP
   tools `validate_citations` / `resolve_reference`.
+- **`units.py`** — typed units (C1): `classify_unit` tags each chunk
+  `section`/`symbol`/`definition`/`code`/`text` at ingest (stored in the BM25
+  sidecar); `search(kinds=[…])` filters by type. Backward compatible — pre-feature
+  hits are classified on the fly.
+- **`assemble.py`** — token-budget assembly (C7): `search(max_tokens=N)` trims the
+  ranked results greedily under a token budget, deduping by content and annotating
+  `token_count` (+ a result-set `tokens` total).
+- **`guards.py`** — capability guards (C9): `VINDEX_READONLY` blocks mutating MCP
+  tools / CLI commands; `VINDEX_ALLOW_ROOTS` restricts which paths `ingest`/
+  `create`/`add-source` may read.
+- **`prompts.py`** — reasoning scaffolds (C11): `grounded_answer`, `decompose`,
+  `citation_contract`, exposed as MCP Prompts and the `vindex prompt` command.
 
 ## Chunking strategies (`chunk_file`)
 

@@ -8,6 +8,7 @@ and offline:
     python3 -m unittest discover -s tests -v
 """
 
+import os
 import sys
 import tempfile
 import unittest
@@ -15,10 +16,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+import assemble  # noqa: E402
 import grounding  # noqa: E402
+import guards  # noqa: E402
 import hybrid  # noqa: E402
 import orchestration as orch  # noqa: E402
+import prompts  # noqa: E402
 import references as refs  # noqa: E402
+import units  # noqa: E402
 
 
 class TokenizeTest(unittest.TestCase):
@@ -174,6 +179,85 @@ class ReferencesTest(unittest.TestCase):
     def test_resolve_reference_no_network_is_unchecked(self):
         out = refs.resolve_reference("https://example.com", network=False)
         self.assertFalse(out["checked"])
+
+
+class UnitsTest(unittest.TestCase):
+    def test_markdown_section_vs_text(self):
+        self.assertEqual(units.classify_unit("a.md", "# Heading\nbody"), "section")
+        self.assertEqual(units.classify_unit("a.md", "just prose, no heading"), "text")
+
+    def test_code_symbol_and_definition(self):
+        self.assertEqual(units.classify_unit("a.py", "def run(x):\n    return x"), "symbol")
+        self.assertEqual(units.classify_unit("a.ts", "export class Foo {}"), "symbol")
+        self.assertEqual(units.classify_unit("a.ts", "interface Opts { n: number }"), "definition")
+        self.assertEqual(units.classify_unit("a.py", "x = 1\nprint(x)"), "code")
+
+    def test_symbol_name(self):
+        self.assertEqual(units.symbol_name("def run_flock(ideas):"), "run_flock")
+        self.assertEqual(units.symbol_name("export function useThing() {}"), "useThing")
+        self.assertIsNone(units.symbol_name("just some prose"))
+
+
+class AssembleTest(unittest.TestCase):
+    def test_trims_to_budget_and_counts(self):
+        # 6 words -> round(6/0.75)=8 tokens each; budget 20 fits exactly two.
+        results = [{"text": "alpha beta gamma delta epsilon zeta"},
+                   {"text": "one two three four five six"},
+                   {"text": "uno dos tres cuatro cinco seis"}]
+        kept, total = assemble.assemble_within_budget(results, max_tokens=20)
+        self.assertEqual(len(kept), 2)
+        self.assertLessEqual(total, 20)
+        self.assertEqual(kept[0]["token_count"], 8)
+
+    def test_dedup_identical_content(self):
+        results = [{"text": "same body"}, {"text": "same   body"}]  # whitespace-normalized dup
+        kept, _ = assemble.assemble_within_budget(results, max_tokens=0)
+        self.assertEqual(len(kept), 1)
+
+    def test_first_item_always_included(self):
+        kept, _ = assemble.assemble_within_budget([{"text": "w " * 100}], max_tokens=1)
+        self.assertEqual(len(kept), 1)
+
+
+class GuardsTest(unittest.TestCase):
+    def setUp(self):
+        self._env = dict(os.environ)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def test_readonly_blocks_mutation(self):
+        os.environ["VINDEX_READONLY"] = "1"
+        self.assertIsNotNone(guards.deny_if_readonly("ingest"))
+        os.environ["VINDEX_READONLY"] = "0"
+        self.assertIsNone(guards.deny_if_readonly("ingest"))
+
+    def test_allow_roots(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["VINDEX_ALLOW_ROOTS"] = d
+            self.assertTrue(guards.path_allowed(str(Path(d) / "sub" / "f.txt")))
+            self.assertFalse(guards.path_allowed("/etc/passwd"))
+
+    def test_no_allowlist_is_unrestricted(self):
+        os.environ.pop("VINDEX_ALLOW_ROOTS", None)
+        self.assertTrue(guards.path_allowed("/anywhere"))
+
+
+class PromptsTest(unittest.TestCase):
+    def test_grounded_answer_includes_rules_and_question(self):
+        out = prompts.grounded_answer("What is X?", "context body")
+        self.assertIn("ONLY", out)
+        self.assertIn("What is X?", out)
+        self.assertIn("[UNVERIFIED]", out)
+
+    def test_render_unknown_raises(self):
+        with self.assertRaises(KeyError):
+            prompts.render("nope")
+
+    def test_decompose_and_citation(self):
+        self.assertIn("sub-question", prompts.decompose("ship the feature"))
+        self.assertIn("citation", prompts.citation_contract().lower())
 
 
 if __name__ == "__main__":

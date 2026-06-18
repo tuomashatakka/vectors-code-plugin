@@ -158,21 +158,22 @@ prompt templates that any agent pairs with the retrieval tools.
 
 | Capability | Status today | Where it lands |
 | --- | --- | --- |
-| C1 typed units | partial (flat chunks; typed nodes in db spec) | engine `unit_type`; `memory_node` |
+| C1 typed units | **shipped** | `units.py`; `unit_type` + `kinds` filter in search |
 | C2 context-prefix chunking | **shipped** | `hybrid.context_prefix` in `ingest` |
 | C3 hybrid dense+sparse + RRF | **shipped** | `hybrid.py` (BM25+RRF) in `Index.search` |
 | C4 layered/Bridge orchestration | **shipped** | `orchestration.py`; `global_search(shared=…)` |
 | C5 provenance & grounding | **shipped** (signals + verifier) | `grounding.py`; result `signals` |
 | C6 confidence tiers | **shipped** | `grounding.confidence_tier` |
-| C7 token-budget assembly | spec'd (unified db) | engine `max_tokens` arg |
+| C7 token-budget assembly | **shipped** | `assemble.py`; `max_tokens` search arg |
 | C8 reference resolve/validate | **shipped** (tools + citation engine) | `references.py`; MCP tools |
-| C9 capability guards | none (read-mostly) | `VINDEX_READONLY` / allow-list |
+| C9 capability guards | **shipped** | `guards.py`; `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS` |
 | C10 incremental ingestion | **shipped** (daemon feeders) | — |
-| C11 prompt scaffolds | none | skill prompt assets |
+| C11 prompt scaffolds | **shipped** | `prompts.py`; MCP Prompts + `vindex prompt` |
 
-> Update: the first wave (C2–C6, C8) shipped as stdlib-only sidecar modules
-> (`hybrid.py`, `grounding.py`, `orchestration.py`, `references.py`) wired into the
-> engine. Remaining: C1 typed units, C7 `max_tokens` trim, C9 guards, C11 prompts.
+> All eleven capabilities are now implemented as stdlib-only sidecar modules
+> (`hybrid`, `grounding`, `orchestration`, `references`, `units`, `assemble`,
+> `guards`, `prompts`) wired into the engine, CLI, and MCP server — keeping the
+> heavy model stack isolated and every capability independently unit-tested.
 
 ## Recommended build order
 

@@ -140,15 +140,19 @@ VINDEX_PROJECT=scene claude mcp add scene-rag -- \
 }
 ```
 
-Tools: `search(query, project?, topk?, rerank?, hybrid?)`,
-`search_global(query, topk?, rerank?, projects?, hybrid?, shared?)`,
-`validate_citations(text, project?)`, `resolve_reference(uri, network?)`,
-`current_project()`, `list_projects()`, `project_status(project?)`,
-`ingest(project?)`, `reindex(project?)`, `create_project(...)`,
-`add_source(...)`. Search is **hybrid** (dense + BM25, RRF-fused, cross-encoder
-reranked): each hit is tagged with the `signals` that found it and the result set
-carries a `confidence` tier; `search_global(shared=[…])` adds Bridge-pattern layer
-weighting. The server auto-populates the resolved default project on startup if
+Tools: `search(query, project?, topk?, rerank?, hybrid?, kinds?, max_tokens?)`,
+`search_global(query, topk?, rerank?, projects?, hybrid?, shared?, kinds?,
+max_tokens?)`, `validate_citations(text, project?)`,
+`resolve_reference(uri, network?)`, `current_project()`, `list_projects()`,
+`project_status(project?)`, `ingest(project?)`, `reindex(project?)`,
+`create_project(...)`, `add_source(...)`. Search is **hybrid** (dense + BM25,
+RRF-fused, cross-encoder reranked): each hit is tagged with the `signals` that
+found it and a `unit_type`, and the result set carries a `confidence` tier;
+`kinds` filters by unit type, `max_tokens` trims to a token budget, and
+`search_global(shared=[…])` adds Bridge-pattern layer weighting. Mutating tools
+honor `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS`; grounding/reasoning **prompt
+scaffolds** (`grounded_answer`, `decompose`, `citation_contract`) are exposed as
+MCP Prompts. The server auto-populates the resolved default project on startup if
 it's empty but has sources.
 
 ## Library
@@ -205,6 +209,10 @@ reranks, and how to add a chunking strategy or swap the embedding model/store.
 - `scripts/grounding.py` — confidence tiers + claim verification.
 - `scripts/orchestration.py` — Bridge-pattern layer weighting for global search.
 - `scripts/references.py` — reference extraction + citation validation.
+- `scripts/units.py` — typed semantic units (`unit_type` + `kinds` filter).
+- `scripts/assemble.py` — token-budget context assembly (`max_tokens`).
+- `scripts/guards.py` — capability guards (`VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS`).
+- `scripts/prompts.py` — grounding/reasoning prompt scaffolds.
 - `scripts/vindex.py` — CLI.
 - `scripts/mcp_server.py` — FastMCP stdio server (project-aware tools).
 - `scripts/viewer_server.py` — JSON API + viewer host.
