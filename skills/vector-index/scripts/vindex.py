@@ -252,6 +252,16 @@ def cmd_serve(a):
     viewer_server.main(index_name=_resolve_name(a.project))
 
 
+def cmd_export_viewer(a):
+    import viewer_server  # noqa: E402
+
+    name = _resolve_name(a.project)
+    out = a.out or f"{name}-viewer.html"
+    res = viewer_server.export_static(out, index_name=name, n=a.n, k=a.k)
+    print(f"standalone viewer -> {res['out']}  "
+          f"({res['nodes']} nodes, {res['links']} links; open it directly, no server)")
+
+
 # ---------------------------------------------------------------------------
 # argument parsing
 # ---------------------------------------------------------------------------
@@ -353,6 +363,14 @@ def build_parser():
     v.add_argument("project", nargs="?", help="project (default: resolved from cwd)")
     v.add_argument("--port", type=int, default=0)
     v.set_defaults(fn=cmd_serve)
+
+    ev = sub.add_parser("export-viewer",
+                        help="write a standalone (no-server) 3D viewer HTML for a project")
+    ev.add_argument("project", nargs="?", help="project (default: resolved from cwd)")
+    ev.add_argument("-o", "--out", help="output .html path (default: <project>-viewer.html)")
+    ev.add_argument("--n", type=int, default=600, help="sampled nodes (default 600)")
+    ev.add_argument("--k", type=int, default=3, help="knn links per node (default 3)")
+    ev.set_defaults(fn=cmd_export_viewer)
 
     pr = sub.add_parser("prompt", help="print a grounding/reasoning prompt scaffold")
     pr.add_argument("name", nargs="?", help="grounded_answer | decompose | citation_contract")
