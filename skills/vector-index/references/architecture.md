@@ -34,7 +34,8 @@ is an alias of `list_indexes`.
 $VINDEX_HOME/                 the global RAG store
 └── <project>/
     ├── config.json           IndexConfig (root, models, dim, chunking, sources)
-    ├── index.zvec/           the zvec collection
+    ├── index.zvec/           the zvec collection (dense)
+    ├── bm25.json.gz          the BM25 lexical sidecar (sparse; built at ingest)
     └── sources/<source_id>/  shallow git clones (for type=git sources)
 ```
 
@@ -130,6 +131,35 @@ union is what makes scores comparable across projects with different embedding
 models; vector scores across differing embed dims/models are not comparable, so
 `rerank=False` global search falls back to per-project vector score and is
 best-effort only.
+
+## Hybrid retrieval, grounding & orchestration
+
+These capabilities are generalized from two external RAG designs — see
+[`generalized-capabilities.md`](generalized-capabilities.md) — and live in
+stdlib-only sidecar modules so the heavy model stack stays isolated:
+
+- **`hybrid.py`** — `BM25Index` (Okapi BM25 + a co-stored render-field map,
+  persisted as `bm25.json.gz` at ingest), `rrf_fuse` (Reciprocal Rank Fusion), and
+  `context_prefix`. `Index.search(hybrid=True)` retrieves dense (zvec) + sparse
+  (BM25) in parallel, fuses the two id-rankings with RRF, then cross-encoder
+  reranks the union. Each result gains a `signals` list (`dense`/`lexical`); a hit
+  found by both is stronger evidence. Projects indexed before this feature have no
+  sidecar and transparently fall back to dense-only.
+- **Context-prefix chunking** — ingest embeds and lexically indexes
+  `context_prefix(title, path, chunk)` while **storing the raw chunk** for display
+  (`ChunkConfig.context_prefix`, default on). Cheap precision win against
+  boilerplate-heavy corpora.
+- **`orchestration.py`** — Bridge-pattern layering for `global_search(shared=[…])`:
+  `classify_query_intent` ("our X" → scoped, "the standard X" → shared) sets
+  per-layer weights that feed the cross-project RRF; hits are tagged with `layer`.
+  With no `shared` layer it's the original equal-weight Pool.
+- **`grounding.py`** — `confidence_tier` (high/medium/low from top score + dense/
+  lexical agreement; attached to every result set) and `verify_claim` (lexical
+  groundedness check).
+- **`references.py`** — `extract_references`, `validate_citations` (check
+  references in text against the corpus via an injected `search_fn`, flag misses
+  `[UNVERIFIED]`), `resolve_reference` (opt-in network HEAD check). Exposed as MCP
+  tools `validate_citations` / `resolve_reference`.
 
 ## Chunking strategies (`chunk_file`)
 

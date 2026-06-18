@@ -140,12 +140,16 @@ VINDEX_PROJECT=scene claude mcp add scene-rag -- \
 }
 ```
 
-Tools: `search(query, project?, topk?, rerank?)`,
-`search_global(query, topk?, rerank?, projects?)`, `current_project()`,
-`list_projects()`, `project_status(project?)`, `ingest(project?)`,
-`reindex(project?)`, `create_project(...)`, `add_source(...)`. The server
-auto-populates the resolved default project on startup if it's empty but has
-sources.
+Tools: `search(query, project?, topk?, rerank?, hybrid?)`,
+`search_global(query, topk?, rerank?, projects?, hybrid?, shared?)`,
+`validate_citations(text, project?)`, `resolve_reference(uri, network?)`,
+`current_project()`, `list_projects()`, `project_status(project?)`,
+`ingest(project?)`, `reindex(project?)`, `create_project(...)`,
+`add_source(...)`. Search is **hybrid** (dense + BM25, RRF-fused, cross-encoder
+reranked): each hit is tagged with the `signals` that found it and the result set
+carries a `confidence` tier; `search_global(shared=[…])` adds Bridge-pattern layer
+weighting. The server auto-populates the resolved default project on startup if
+it's empty but has sources.
 
 ## Library
 
@@ -196,6 +200,11 @@ reranks, and how to add a chunking strategy or swap the embedding model/store.
 
 - `scripts/vector_index.py` — core library (config, chunking, store, `Index`,
   `Project`, resolution, `global_search`).
+- `scripts/hybrid.py` — BM25 lexical index + RRF fusion + context-prefix (the
+  sparse half of hybrid search).
+- `scripts/grounding.py` — confidence tiers + claim verification.
+- `scripts/orchestration.py` — Bridge-pattern layer weighting for global search.
+- `scripts/references.py` — reference extraction + citation validation.
 - `scripts/vindex.py` — CLI.
 - `scripts/mcp_server.py` — FastMCP stdio server (project-aware tools).
 - `scripts/viewer_server.py` — JSON API + viewer host.

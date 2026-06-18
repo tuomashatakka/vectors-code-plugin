@@ -159,16 +159,20 @@ prompt templates that any agent pairs with the retrieval tools.
 | Capability | Status today | Where it lands |
 | --- | --- | --- |
 | C1 typed units | partial (flat chunks; typed nodes in db spec) | engine `unit_type`; `memory_node` |
-| C2 context-prefix chunking | **missing** | `chunk_file` / `ingest` |
-| C3 hybrid dense+sparse + RRF | dense+rerank only, **no lexical** | new `bm25` + fusion in `search` |
-| C4 layered/Bridge orchestration | Silo + Pool (project/global) | `global_search`; `project.parent_id` |
-| C5 provenance & grounding | scores/source present; no verifier | new grounding helper; result signals |
-| C6 confidence tiers | none | derive from rerank/agreement |
+| C2 context-prefix chunking | **shipped** | `hybrid.context_prefix` in `ingest` |
+| C3 hybrid dense+sparse + RRF | **shipped** | `hybrid.py` (BM25+RRF) in `Index.search` |
+| C4 layered/Bridge orchestration | **shipped** | `orchestration.py`; `global_search(shared=…)` |
+| C5 provenance & grounding | **shipped** (signals + verifier) | `grounding.py`; result `signals` |
+| C6 confidence tiers | **shipped** | `grounding.confidence_tier` |
 | C7 token-budget assembly | spec'd (unified db) | engine `max_tokens` arg |
-| C8 reference resolve/validate | db `reference` + daemon extract | resolver/validator MCP tools; citation engine |
+| C8 reference resolve/validate | **shipped** (tools + citation engine) | `references.py`; MCP tools |
 | C9 capability guards | none (read-mostly) | `VINDEX_READONLY` / allow-list |
 | C10 incremental ingestion | **shipped** (daemon feeders) | — |
 | C11 prompt scaffolds | none | skill prompt assets |
+
+> Update: the first wave (C2–C6, C8) shipped as stdlib-only sidecar modules
+> (`hybrid.py`, `grounding.py`, `orchestration.py`, `references.py`) wired into the
+> engine. Remaining: C1 typed units, C7 `max_tokens` trim, C9 guards, C11 prompts.
 
 ## Recommended build order
 
