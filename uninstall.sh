@@ -28,16 +28,26 @@ if isinstance(cfg.get(key), dict) and cfg[key].pop("vectors", None) is not None:
 PY
 }
 
-unlink_skill "$HOME/.claude/skills"
-unlink_file "$HOME/.claude/commands/vectors.md"
-if command -v claude >/dev/null 2>&1; then claude mcp remove vectors -s user >/dev/null 2>&1 && echo "   removed claude code MCP 'vectors'" || true; fi
-unlink_skill "$HOME/.config/opencode/skills"
-unlink_file "$HOME/.config/opencode/command/vectors.md"
-del_json_mcp "$HOME/.config/opencode/opencode.json" "mcp"
-case "$(uname -s)" in
-  Darwin) del_json_mcp "$HOME/Library/Application Support/Claude/claude_desktop_config.json" "mcpServers" ;;
-  Linux)  del_json_mcp "$HOME/.config/Claude/claude_desktop_config.json" "mcpServers" ;;
-esac
+# Tool bindings are data-driven from scripts/environments.sh to mirror install.sh.
+# shellcheck source=scripts/environments.sh
+source "$ROOT/scripts/environments.sh"
+
+unbind_environment(){
+  local id="$1" label="$2" skill_dir="$3" command_dir="$4" mcp_kind="$5" mcp_path="$6" mcp_topkey="$7" mcp_flavor="$8"
+  [ -n "$skill_dir" ] && unlink_skill "$skill_dir"
+  [ -n "$command_dir" ] && unlink_file "$command_dir/vectors.md"
+  case "$mcp_kind" in
+    claude_cli)
+      if command -v claude >/dev/null 2>&1; then claude mcp remove vectors -s user >/dev/null 2>&1 && echo "   removed claude code MCP 'vectors'" || true; fi
+      ;;
+    json)
+      del_json_mcp "$mcp_path" "$mcp_topkey"
+      ;;
+    none) ;;
+  esac
+}
+
+vectors_each_detected_environment unbind_environment
 
 [ "$RM_DAEMON" -eq 1 ] && bash "$SKILL_SRC/daemon/uninstall.sh" || true
 if [ "$RM_VENV" -eq 1 ]; then rm -rf "$SKILL_SRC/.venv"; echo "   removed $SKILL_SRC/.venv"; fi

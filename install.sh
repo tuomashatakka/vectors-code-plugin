@@ -56,44 +56,47 @@ with open(path, "w") as f: json.dump(cfg, f, indent=2)
 PY
 }
 
-# 2) Claude Code -------------------------------------------------------------
-if [ -d "$HOME/.claude" ] || command -v claude >/dev/null 2>&1; then
-  say "Claude Code"
-  link_skill "$HOME/.claude/skills"
-  link_cmd "$HOME/.claude/commands"
-  if command -v claude >/dev/null 2>&1; then
-    claude mcp remove vectors -s user >/dev/null 2>&1 || true
-    if claude mcp add vectors -s user -- "$PYBIN" "$MCP_PY" >/dev/null 2>&1; then
-      touched+=("mcp    -> claude code (user scope)"); note "registered MCP 'vectors'"
-    else
-      note "couldn't auto-register MCP — installed as a plugin, the bundled .mcp.json handles it"
-    fi
-  else
-    note "claude CLI not found; as a plugin the bundled .mcp.json registers it, or run:"
-    note "  claude mcp add vectors -- $PYBIN $MCP_PY"
-  fi
-fi
+# 2) harness / LLM application bindings --------------------------------------
+# Tool bindings are data-driven from scripts/environments.sh so new applications
+# can be added without cloning installer control flow.
+# shellcheck source=scripts/environments.sh
+source "$ROOT/scripts/environments.sh"
 
-# 3) opencode ----------------------------------------------------------------
-if [ -d "$HOME/.config/opencode" ] || command -v opencode >/dev/null 2>&1; then
-  say "opencode"
-  link_skill "$HOME/.config/opencode/skills"
-  link_cmd "$HOME/.config/opencode/command"
-  merge_json_mcp "$HOME/.config/opencode/opencode.json" "mcp" "opencode"
-  touched+=("mcp    -> ~/.config/opencode/opencode.json"); note "registered MCP 'vectors'"
-fi
+bind_environment(){
+  local id="$1" label="$2" skill_dir="$3" command_dir="$4" mcp_kind="$5" mcp_path="$6" mcp_topkey="$7" mcp_flavor="$8"
+  say "$label"
 
-# 4) Claude Desktop (no stable cwd -> relies on search_global; restart to load)
-DESKTOP_CFG=""; APP=""
-case "$(uname -s)" in
-  Darwin) DESKTOP_CFG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"; APP="/Applications/Claude.app" ;;
-  Linux)  DESKTOP_CFG="$HOME/.config/Claude/claude_desktop_config.json" ;;
-esac
-if [ -n "$DESKTOP_CFG" ] && { [ -e "$DESKTOP_CFG" ] || [ -d "$(dirname "$DESKTOP_CFG")" ] || [ -d "$APP" ]; }; then
-  say "Claude Desktop"
-  merge_json_mcp "$DESKTOP_CFG" "mcpServers" "claude"
-  touched+=("mcp    -> $DESKTOP_CFG"); note "registered MCP 'vectors' (restart Claude Desktop; uses global search)"
-fi
+  if [ -n "$skill_dir" ]; then link_skill "$skill_dir"; fi
+  if [ -n "$command_dir" ]; then link_cmd "$command_dir"; fi
+
+  case "$mcp_kind" in
+    claude_cli)
+      if command -v claude >/dev/null 2>&1; then
+        claude mcp remove vectors -s user >/dev/null 2>&1 || true
+        if claude mcp add vectors -s user -- "$PYBIN" "$MCP_PY" >/dev/null 2>&1; then
+          touched+=("mcp    -> claude code (user scope)"); note "registered MCP 'vectors'"
+        else
+          note "couldn't auto-register MCP — installed as a plugin, the bundled .mcp.json handles it"
+        fi
+      else
+        note "claude CLI not found; as a plugin the bundled .mcp.json registers it, or run:"
+        note "  claude mcp add vectors -- $PYBIN $MCP_PY"
+      fi
+      ;;
+    json)
+      merge_json_mcp "$mcp_path" "$mcp_topkey" "$mcp_flavor"
+      touched+=("mcp    -> $mcp_path")
+      if [ "$id" = "claude_desktop" ]; then
+        note "registered MCP 'vectors' (restart Claude Desktop; uses global search)"
+      else
+        note "registered MCP 'vectors'"
+      fi
+      ;;
+    none) ;;
+  esac
+}
+
+vectors_each_detected_environment bind_environment
 
 # 5) background daemon (optional; needs Postgres + pgvector) ------------------
 if [ "$NO_DAEMON" -eq 0 ]; then
@@ -109,7 +112,7 @@ fi
 # summary --------------------------------------------------------------------
 say "done"
 if [ ${#touched[@]} -eq 0 ]; then
-  note "no supported tools detected (Claude Code / opencode / Claude Desktop)."
+  note "no supported tools detected (Claude Code / Codex / opencode / Claude Desktop)."
   note "the venv is built — use the CLI directly: $PYBIN $SKILL_SRC/scripts/vindex.py --help"
 else
   for t in "${touched[@]}"; do note "$t"; done
