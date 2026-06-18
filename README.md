@@ -1,6 +1,6 @@
 # vectors-plugin
 
-A Claude Code / opencode / Claude Desktop plugin that ships a **global, local,
+A Claude Code / Codex / opencode / Claude Desktop plugin that ships a **global, local,
 project-partitioned semantic RAG store** — the `vector-index` skill plus an MCP
 server exposing it as live tools.
 
@@ -39,7 +39,7 @@ vectors-plugin/
 ## Install
 
 One command builds the venv, symlinks the skill, and registers the `vectors`
-MCP server into every tool it finds:
+MCP server into every supported harness/LLM application it finds:
 
 ```bash
 bash install.sh                 # build + wire everything; asks about the daemon
@@ -51,11 +51,15 @@ It's idempotent — re-run any time. Reverse it with `bash uninstall.sh` (add
 `--venv` to also drop the venv, `--daemon` to remove the background service).
 The on-disk store at `$VINDEX_HOME` is always left intact.
 
-What it wires per tool:
+What it wires per tool (from the shared, data-driven environment registry in
+`scripts/environments.sh`):
 
 - **Claude Code** — skill → `~/.claude/skills/vector-index`, `/vectors` command →
   `~/.claude/commands/`; MCP via the bundled `.mcp.json` (plugin installs) or
   `claude mcp add` (user scope).
+- **Codex** — skill → `~/.codex/skills/vector-index` (or
+  `$CODEX_HOME/skills/vector-index`), `/vectors` command →
+  `~/.codex/commands/` (or `$CODEX_HOME/commands/`).
 - **opencode** — skill → `~/.config/opencode/skills/vector-index`, `/vectors`
   command → `~/.config/opencode/command/`; MCP entry in
   `~/.config/opencode/opencode.json`.
