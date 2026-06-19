@@ -75,6 +75,11 @@ except Exception:  # pragma: no cover - import-time guidance
     )
     raise
 
+# Shared, dependency-light transcript parsing (single source of truth, also used
+# by the intent-memory grader). The plugin's scripts dir holds it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+import transcript as _tx  # noqa: E402
+
 # ---------------------------------------------------------------------------
 # Config (all from env; see the module docstring)
 # ---------------------------------------------------------------------------
@@ -258,60 +263,11 @@ def enqueue(conn, task: str, payload: dict, dedupe_key: str, priority: int = 100
 # ===========================================================================
 # Feeder 1: chat transcripts -> session / message
 # ===========================================================================
-def _extract_text(content) -> str:
-    """Tolerant: transcript `content` may be a string, a list of typed parts, or
-    a dict. Tool-result parts nest their own list of blocks, so recurse instead of
-    assuming each part flattens to a string."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        out = []
-        for part in content:
-            if isinstance(part, str):
-                out.append(part)
-            elif isinstance(part, dict):
-                val = part.get("text")
-                if val is None:
-                    val = part.get("content")
-                out.append(val if isinstance(val, str) else _extract_text(val))
-            else:
-                out.append(str(part))
-        return "\n".join(t for t in out if t)
-    if isinstance(content, dict):
-        val = content.get("text")
-        if val is None:
-            val = content.get("content")
-        return val if isinstance(val, str) else _extract_text(val)
-    return ""
-
-
-def _parse_transcript(path: str) -> list[tuple[str, str]]:
-    """Return [(role, text)] for message-bearing lines, skipping tool/meta events."""
-    msgs: list[tuple[str, str]] = []
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except Exception:
-                    continue
-                m = ev.get("message") if isinstance(ev, dict) else None
-                role = (m or {}).get("role") or (ev.get("type") if isinstance(ev, dict) else None)
-                if role not in ("user", "assistant", "tool"):
-                    continue
-                text = _extract_text((m or {}).get("content") if m else ev.get("content"))
-                # Postgres text columns reject NUL (0x00); strip it so transcripts
-                # that embed binary/escape noise still ingest instead of erroring.
-                if "\x00" in text:
-                    text = text.replace("\x00", "")
-                if text.strip():
-                    msgs.append((role, text))
-    except FileNotFoundError:
-        pass
-    return msgs
+# Tolerant transcript parsing lives in the shared `transcript` module so the
+# daemon and the intent-memory grader stay byte-for-byte consistent. (NUL is
+# already stripped there, which also keeps Postgres text columns happy.)
+_extract_text = _tx.extract_text
+_parse_transcript = _tx.parse_transcript
 
 
 def feed_chats(conn) -> int:

@@ -25,6 +25,14 @@ Index a project once; then query it — per project, or globally across every
 project at once. Use it from the CLI, the MCP server, the Python library, or the
 3D viewer. An optional background daemon keeps everything re-ingested for you.
 
+It also **learns from the conversation**: Claude Code hooks record each user
+intent, how often similar asks recur, the assistant's response, and whether it
+resolved the intent — then inject prior known resolutions (and failures to avoid)
+into context before the next reply. The intent memory is local-first SQLite
+(`$VINDEX_HOME/__intents__/`), recall is a fast model-free lexical lookup, and
+grading uses a local Ollama judge (with a transcript heuristic fallback). See
+**Intent memory** in the skill docs; toggle off with `VINDEX_INTENT_DISABLE=1`.
+
 ## What's inside
 
 ```
@@ -69,7 +77,7 @@ What it wires per tool (from the shared, data-driven environment registry in
 
 MCP tools: `search`, `search_global`, `current_project`, `list_projects`,
 `project_status`, `ingest`, `reindex`, `create_project`, `add_source`,
-`validate_citations`, `resolve_reference`.
+`validate_citations`, `resolve_reference`, `recall_intents`, `resolve_intent`.
 
 ## Usage
 

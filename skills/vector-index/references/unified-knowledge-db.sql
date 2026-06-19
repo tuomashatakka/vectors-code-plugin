@@ -423,3 +423,43 @@ CREATE TABLE daemon_state (
   value       jsonb NOT NULL DEFAULT '{}',
   updated_at  timestamptz NOT NULL DEFAULT now()
 );
+
+
+-- ----------------------------------------------------------------------------
+-- Intent memory: a mirror of the local-first SQLite intent store
+-- ($VINDEX_HOME/__intents__/intents.db; see scripts/intents.py). The plugin
+-- learns from the *conversation* — which recurring user intents come up, how
+-- often, and which assistant responses actually resolved them — entirely on
+-- local SQLite, needing no daemon. When the daemon IS running it can mirror that
+-- store here so intent memory joins the rest of the unified knowledge graph and
+-- can be re-graded by the Ollama judge. `id` is the deterministic intent id
+-- ("i" + sha256(normalized_intent)[:30]) so the two stores stay in lockstep.
+-- ----------------------------------------------------------------------------
+CREATE TABLE intent (
+  id             text PRIMARY KEY,            -- "i" + sha256(normalized)[:30]
+  normalized     text NOT NULL,               -- canonical intent key
+  intent_text    text NOT NULL,               -- representative phrasing
+  project        text NOT NULL DEFAULT '',    -- project scope ('' = global)
+  frequency      integer NOT NULL DEFAULT 0,  -- times a similar intent recurred
+  first_seen     timestamptz,
+  last_seen      timestamptz,
+  first_session  text,
+  last_session   text
+);
+CREATE INDEX intent_project_idx ON intent (project);
+CREATE INDEX intent_frequency_idx ON intent (frequency DESC);
+
+CREATE TABLE intent_resolution (
+  id                bigserial PRIMARY KEY,
+  intent_id         text NOT NULL REFERENCES intent(id) ON DELETE CASCADE,
+  session           text,
+  ts                timestamptz NOT NULL DEFAULT now(),
+  response_excerpt  text,                       -- short excerpt, not the full reply
+  outcome           text NOT NULL DEFAULT 'unknown'  -- resolved|partial|unresolved|unknown
+                    CHECK (outcome IN ('resolved','partial','unresolved','unknown')),
+  score             real NOT NULL DEFAULT 0.0,  -- 0..1 how well it answered the intent
+  grader            text NOT NULL DEFAULT '',   -- llm | heuristic | explicit
+  graded            boolean NOT NULL DEFAULT false
+);
+CREATE INDEX intent_resolution_intent_idx ON intent_resolution (intent_id);
+CREATE INDEX intent_resolution_outcome_idx ON intent_resolution (outcome);
