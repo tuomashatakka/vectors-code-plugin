@@ -49,7 +49,9 @@ if os.path.exists(path) and os.path.getsize(path):
 servers = cfg.setdefault(topkey, {})
 if flavor == "opencode":
     servers["vectors"] = {"type": "local", "command": [py, mcp], "enabled": True}
-else:  # claude desktop
+elif flavor == "vscode":
+    servers["vectors"] = {"type": "stdio", "command": py, "args": [mcp]}
+else:  # claude desktop / antigravity (mcpServers schema)
     servers["vectors"] = {"command": py, "args": [mcp]}
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path, "w") as f: json.dump(cfg, f, indent=2)
