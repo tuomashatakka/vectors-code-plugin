@@ -1,6 +1,7 @@
 # vectors-plugin
 
-A Claude Code / Codex / opencode / Claude Desktop plugin that ships a **global, local,
+A Claude Code / Codex / opencode / Claude Desktop / VS Code / Antigravity plugin
+that ships a **global, local,
 project-partitioned semantic RAG store** — the `vector-index` skill plus an MCP
 server exposing it as live tools.
 
@@ -74,10 +75,45 @@ What it wires per tool (from the shared, data-driven environment registry in
 - **Claude Desktop** — no skills dir, so just the MCP server in
   `~/Library/Application Support/Claude/claude_desktop_config.json` (relies on
   global search — it has no fixed working directory).
+- **VS Code** — no skills dir; MCP server registered in
+  `~/Library/Application Support/Code/User/mcp.json` (a `servers` entry with
+  `stdio` transport). Restart VS Code to pick it up.
+- **Antigravity** — skill → `~/.gemini/skills/vector-index`; MCP server written to
+  `~/.antigravity/mcp_config.json` and the `~/.gemini/{config,antigravity,antigravity-ide}/mcp_config.json`
+  variants (Antigravity's config path varies by version, so all are covered).
 
 MCP tools: `search`, `search_global`, `current_project`, `list_projects`,
 `project_status`, `ingest`, `reindex`, `create_project`, `add_source`,
 `validate_citations`, `resolve_reference`, `recall_intents`, `resolve_intent`.
+
+## Scripts (pnpm)
+
+`package.json` is a thin task runner over the Python/bash tooling (no JS
+dependencies). Initialize once, then drive everything through `pnpm`:
+
+```bash
+pnpm install                 # initialize the workspace (zero JS deps)
+pnpm setup                   # build the skill venv + deps (wraps setup.sh)
+pnpm wire                    # wire every detected editor (wraps install.sh); :all / :no-daemon variants
+pnpm unwire                  # reverse it (wraps uninstall.sh)
+
+pnpm projects                # list indexed projects (* = active)
+pnpm ingest <project>        # (re)ingest a project's sources
+pnpm search "<query>"        # global search across every project
+pnpm query <project> "<q>"   # search one project
+pnpm serve <project>         # 3D viewer -> http://localhost:7341
+pnpm export-viewer <project> # standalone viewer HTML (no server)
+pnpm digest [parent-dir]     # create + ingest every immediate child dir
+                             #   (default ~/Documents/Projects; idempotent; skips giant repos)
+
+pnpm daemon:install          # install the background sync daemon
+pnpm daemon:restart          # force a fresh sweep (launchd kickstart)
+pnpm daemon:logs             # tail the daemon log
+pnpm test                    # run the Python test suite
+```
+
+pnpm forwards arguments straight to the underlying command, e.g.
+`pnpm serve scene --port 8080` or `pnpm ingest scene --rebuild`.
 
 ## Usage
 

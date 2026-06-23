@@ -1,0 +1,39 @@
+{
+  "name": "vectors-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Global, local, project-partitioned semantic RAG: a vector-index skill plus an MCP server with per-project and cross-project (global) search. This package.json is a task runner over the Python/bash tooling \u2014 there are no JS dependencies.",
+  "homepage": "https://github.com/tuomashatakka/vectors-code-plugin",
+  "license": "MIT",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=9"
+  },
+  "scripts": {
+    "setup": "bash skills/vector-index/setup.sh",
+    "wire": "bash install.sh",
+    "wire:all": "bash install.sh --yes",
+    "wire:no-daemon": "bash install.sh --no-daemon",
+    "unwire": "bash uninstall.sh",
+    "daemon:install": "bash skills/vector-index/daemon/install.sh",
+    "daemon:uninstall": "bash skills/vector-index/daemon/uninstall.sh",
+    "daemon:restart": "launchctl kickstart -k gui/$(id -u)/com.vectors.ukdb",
+    "daemon:status": "launchctl print gui/$(id -u)/com.vectors.ukdb 2>/dev/null | head -30",
+    "daemon:logs": "tail -n 50 -f \"$HOME/Library/Logs/ukdb-daemon.out.log\"",
+    "vindex": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py",
+    "projects": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py projects",
+    "ingest": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py ingest",
+    "reindex": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py reindex",
+    "search": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py search",
+    "query": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py query",
+    "status": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py status",
+    "serve": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py serve",
+    "export-viewer": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/vindex.py export-viewer",
+    "demo-viewer": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/make_demo_viewer.py",
+    "digest": "bash skills/vector-index/scripts/digest_projects.sh",
+    "mcp": "skills/vector-index/.venv/bin/python skills/vector-index/scripts/mcp_server.py",
+    "test": "cd skills/vector-index && ./.venv/bin/python -m unittest discover -s tests",
+    "test:units": "cd skills/vector-index && VINDEX_SKIP_MODEL_TESTS=1 ./.venv/bin/python -m unittest discover -s tests"
+  }
+}
