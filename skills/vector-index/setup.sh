@@ -36,18 +36,16 @@ DSN="${VINDEX_DSN:-${UKDB_DSN:-}}"
 if [ -z "$DSN" ]; then
   cat <<MSG
 
->> Postgres + pgvector is required (replaces the old in-process store).
-   Spin up a local one:
+>> No VINDEX_DSN/UKDB_DSN set — using the default postgres://localhost:5432/vectors
+   (a local Postgres + pgvector, e.g.  brew install postgresql@16 pgvector ).
+   Override by exporting VINDEX_DSN. No local Postgres? Spin up a throwaway one:
      docker run -d --name vectors-pg -e POSTGRES_PASSWORD=x -e POSTGRES_DB=vectors \\
        -p 5432:5432 pgvector/pgvector:pg16
-   Then point the plugin at it and apply the schema:
      export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
-     bun src/db/schema.ts
 MSG
-else
-  echo ">> applying schema to \$VINDEX_DSN"
-  bun src/db/schema.ts
 fi
+echo ">> applying schema (${DSN:-postgres://localhost:5432/vectors})"
+bun src/db/schema.ts
 
 # --- optional project build -------------------------------------------------
 if [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -n "$DSN" ]; then
