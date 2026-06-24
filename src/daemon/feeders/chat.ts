@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import { q, q1, tx } from '../../db/pool.ts'
 import { parseTranscript } from '../../transcript.ts'
-import { CHAT_GLOBS } from '../../config.ts'
+import { CHAT_GLOBS, CHAT_INTERVAL } from '../../config.ts'
 
 
 function sha256 (t: string): Buffer {
@@ -82,7 +82,7 @@ export async function syncOnce (): Promise<number> {
 }
 
 export async function runChatFeeder (signal: AbortSignal): Promise<void> {
-  const interval = Number(process.env.UKDB_CHAT_INTERVAL || '5') * 1000
+  const interval = CHAT_INTERVAL * 1000
   while (!signal.aborted) {
     try {
       const n = await syncOnce()

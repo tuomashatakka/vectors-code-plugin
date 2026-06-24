@@ -24,8 +24,8 @@ if [ ! -f "$ENV_FILE" ]; then
   echo "   cp ukdb-daemon.env.example ukdb-daemon.env  and set UKDB_DSN" >&2
   exit 1
 fi
-if ! grep -q '^UKDB_DSN=' "$ENV_FILE"; then
-  echo "!! $ENV_FILE must define UKDB_DSN (libpq DSN to the unified DB)" >&2
+if ! grep -qE '^(VINDEX|UKDB)_DSN=' "$ENV_FILE"; then
+  echo "!! $ENV_FILE must define VINDEX_DSN (or the legacy UKDB_DSN) — a libpq DSN to the unified DB" >&2
   exit 1
 fi
 

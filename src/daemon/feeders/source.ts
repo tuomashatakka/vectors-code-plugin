@@ -7,6 +7,7 @@
 import { q } from '../../db/pool.ts'
 import { listProjects } from '../../db/projects.ts'
 import { ingestProject } from '../../db/ingest.ts'
+import { SOURCE_INTERVAL } from '../../config.ts'
 
 /** One sweep over all projects. Returns total chunks (re)written. */
 export async function syncOnce (): Promise<number> {
@@ -30,7 +31,7 @@ export async function syncOnce (): Promise<number> {
 }
 
 export async function runSourceFeeder (signal: AbortSignal): Promise<void> {
-  const interval = Number(process.env.UKDB_SOURCE_INTERVAL || '300') * 1000
+  const interval = SOURCE_INTERVAL * 1000
   while (!signal.aborted) {
     try {
       await syncOnce()
