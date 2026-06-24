@@ -56,6 +56,9 @@ export async function migrate (): Promise<void> {
   await getPool().query(`
     ALTER TABLE project ADD COLUMN IF NOT EXISTS sources jsonb NOT NULL DEFAULT '[]';
     ALTER TABLE chunk ADD COLUMN IF NOT EXISTS unit_type text;
+    ALTER TABLE chunk ADD COLUMN IF NOT EXISTS symbol text;
+    CREATE INDEX IF NOT EXISTS chunk_symbol_idx ON chunk (symbol) WHERE symbol IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS link_src_idx ON link (src_kind, src_id);
     ALTER TABLE chunk ADD COLUMN IF NOT EXISTS tsv tsvector
       GENERATED ALWAYS AS (to_tsvector('english', coalesce(title,'') || ' ' || text)) STORED;
     CREATE INDEX IF NOT EXISTS chunk_tsv_idx ON chunk USING gin (tsv);

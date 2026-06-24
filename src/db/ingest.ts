@@ -9,7 +9,8 @@ import { readFile, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { q, q1, tx, toVector } from './pool.ts'
 import { getOrCreateProject, getSources } from './projects.ts'
-import { chunkFile } from '../chunk/chunker.ts'
+import { chunkFile, pickStrategy } from '../chunk/chunker.ts'
+import { astChunks, astImports } from '../chunk/ast.ts'
 import { embed } from '../embed/embedder.ts'
 import { assertWritable, assertAllowedRoot } from '../guards.ts'
 import type { SourceConfig } from './types.ts'
@@ -104,11 +105,18 @@ export async function ingestProject (name: string, rebuild = false): Promise<Ing
 
       stats.filesChanged++
 
-      const url      = buildUrl(source, rel)
-      const title    = rel
-      const produced = chunkFile(rel, text, proj.chunk_cfg)
+      const url   = buildUrl(source, rel)
+      const title = rel
+
+      // Code files get AST-aware, symbol-titled chunks (+ an import graph);
+      // everything else (and unsupported languages / parse failures) falls back
+      // to the heading/line/char chunker.
+      const isCode   = pickStrategy(rel, proj.chunk_cfg.strategy) === 'code'
+      const produced = isCode && await astChunks(rel, text, proj.chunk_cfg) || chunkFile(rel, text, proj.chunk_cfg)
       if (produced.length === 0)
         continue
+
+      const imports = isCode ? await astImports(rel, text) : []
 
       // Embed all chunks for this file in one batch.
       const vectors = await embed(produced.map(c => c.text), proj.embed_model)
@@ -126,6 +134,7 @@ export async function ingestProject (name: string, rebuild = false): Promise<Ing
         const documentId = doc.rows[0].id as string
         await client.query('DELETE FROM chunk WHERE document_id = $1', [ documentId ])
 
+        let firstChunkId: string | null = null
         for (let i = 0; i < produced.length; i++) {
           const c         = produced[i]
           const chunkHash = sha256(c.text)
@@ -136,18 +145,35 @@ export async function ingestProject (name: string, rebuild = false): Promise<Ing
              RETURNING embedding_id`,
             [ proj.space_id, chunkHash, approxTokens(c.text), toVector(vectors[i]) ],
           )
-          await client.query(
-            `INSERT INTO chunk (document_id, project_id, ordinal, title, text, url, content_hash, token_count, space_id, embedding_id, unit_type)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          const ins = await client.query(
+            `INSERT INTO chunk (document_id, project_id, ordinal, title, text, url, content_hash, token_count, space_id, embedding_id, unit_type, symbol)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
              ON CONFLICT (document_id, ordinal)
              DO UPDATE SET text=EXCLUDED.text, title=EXCLUDED.title, url=EXCLUDED.url,
                            content_hash=EXCLUDED.content_hash, embedding_id=EXCLUDED.embedding_id,
-                           unit_type=EXCLUDED.unit_type`,
+                           unit_type=EXCLUDED.unit_type, symbol=EXCLUDED.symbol
+             RETURNING id`,
             [ documentId, proj.id, c.ordinal, c.title, c.text, c.url ?? url, chunkHash,
-              approxTokens(c.text), proj.space_id, emb.rows[0].embedding_id, c.unit_type ],
+              approxTokens(c.text), proj.space_id, emb.rows[0].embedding_id, c.unit_type, c.symbol ?? null ],
           )
+          firstChunkId ??= ins.rows[0].id as string
           stats.chunks++
         }
+
+        if (firstChunkId)
+          for (const target of imports) {
+            const ref = await client.query(
+              `INSERT INTO reference (kind, uri, title) VALUES ('file', $1, $1)
+               ON CONFLICT (kind, uri) DO UPDATE SET last_seen = now() RETURNING id`,
+              [ target.slice(0, 2048) ],
+            )
+            await client.query(
+              `INSERT INTO link (src_kind, src_id, dst_kind, dst_id, relation, project_id)
+               VALUES ('chunk', $1, 'reference', $2, 'mentions', $3)
+               ON CONFLICT (src_kind, src_id, dst_kind, dst_id, relation) DO NOTHING`,
+              [ firstChunkId, ref.rows[0].id, proj.id ],
+            )
+          }
       })
     }
   }
