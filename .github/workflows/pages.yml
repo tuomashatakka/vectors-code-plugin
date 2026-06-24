@@ -6,8 +6,9 @@ on:
     paths:
       - 'docs/**'
       - '.github/workflows/pages.yml'
+      - 'assets/viewer.html'
       - 'skills/vector-index/assets/viewer.html'
-      - 'skills/vector-index/scripts/make_demo_viewer.py'
+      - 'src/viewer/make_demo.ts'
   workflow_dispatch:
 
 permissions:
@@ -30,11 +31,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Regenerate the demo viewer from the canonical viewer
-        run: python3 skills/vector-index/scripts/make_demo_viewer.py docs/viewer-demo.html
+        run: bun run demo-viewer docs/viewer-demo.html
 
       - name: Upload static site (docs/)
         uses: actions/upload-pages-artifact@v3
