@@ -107,6 +107,23 @@
   #hint kbd { color:var(--dim); border:1px solid var(--line-2); border-radius:2px;
     padding:0 4px; font:inherit; }
 
+  #brand .switch { margin-top:7px; color:var(--accent); cursor:pointer; font-size:10.5px; display:none; }
+  #brand .switch:hover { text-decoration:underline; }
+
+  #picker { position:fixed; inset:0; z-index:30; display:none; align-items:center; justify-content:center;
+    background:rgba(4,5,7,.82); backdrop-filter:blur(3px); }
+  #picker.show { display:flex; }
+  #picker .card { width:min(40ch,86vw); max-height:70vh; overflow:auto; padding:14px;
+    background:var(--panel); border:1px solid var(--line-2); border-radius:var(--r); }
+  #picker h2 { font-size:10.5px; letter-spacing:.2em; text-transform:uppercase; color:var(--dim);
+    font-weight:600; margin-bottom:10px; }
+  #picker .pj { display:flex; justify-content:space-between; align-items:center; gap:10px;
+    padding:9px 11px; border:1px solid var(--line); border-radius:2px; margin-bottom:6px; cursor:pointer;
+    transition:background .1s,border-color .1s; }
+  #picker .pj:hover { background:rgba(110,181,232,.08); border-color:var(--accent); }
+  #picker .pj .nm { color:var(--fg); font-weight:600; }
+  #picker .pj .st { color:var(--faint); font-size:10.5px; }
+
   @media (max-width:640px){ #legend,#hint{display:none} #detail{width:86vw} }
 </style>
 </head>
@@ -116,6 +133,7 @@
 <aside id="brand" class="panel">
   <h1>synapse viewer</h1>
   <div class="meta" id="meta">loading…</div>
+  <div class="switch" id="switch">▾ switch project</div>
 </aside>
 
 <div id="searchbar" class="panel">
@@ -137,6 +155,8 @@
   <kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>click</kbd> inspect ·
   <kbd>↑↓←→</kbd> traverse relations · <kbd>esc</kbd> clear
 </div>
+
+<div id="picker"><div class="card"><h2>choose a project</h2><div id="picker-list"></div></div></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
@@ -399,7 +419,7 @@ addEventListener('keydown', e=>{
 
 // ---- search --------------------------------------------------------------
 async function serverSearch(q){
-  const r=await (await fetch(API+'/api/search?q='+encodeURIComponent(q))).json();
+  const r=await (await fetch(API+'/api/search?q='+encodeURIComponent(q)+projQ('&'))).json();
   const res=r.results||[]; const hits=new Set(); let topIdx=-1, top=null;
   res.forEach(h=>{ const i=(typeof h.graph_index==='number')?h.graph_index:idById[h.id];
     if(i!=null){ hits.add(i); if(topIdx<0){topIdx=i; top=h;} } });
@@ -488,9 +508,34 @@ function buildLegend(){
 }
 
 // ---- boot ----------------------------------------------------------------
+let PROJECTS=[], PMODE='server', PROJECT=new URLSearchParams(location.search).get('project')||'';
+const projQ = sep => PROJECT ? sep+'project='+encodeURIComponent(PROJECT) : '';
 function bootFromData(data){ MODE='static'; setMeta(data.status); renderGraph(data.graph); }
-async function loadStatus(){ setMeta(await (await fetch(API+'/api/status')).json()); }
-async function loadGraph(){ renderGraph(await (await fetch(API+'/api/graph?n=600&k=3')).json()); }
+async function loadStatus(){ setMeta(await (await fetch(API+'/api/status'+projQ('?'))).json()); }
+async function loadGraph(){ renderGraph(await (await fetch(API+'/api/graph?n=600&k=3'+projQ('&'))).json()); }
+
+// ---- project picker ------------------------------------------------------
+function showPicker(){ const L=$('picker-list');
+  L.innerHTML=PROJECTS.length ? PROJECTS.map((p,i)=>`<div class="pj" data-i="${i}">`+
+    `<span class="nm">${esc(p.name)}</span>`+
+    `<span class="st">${(p.status?p.status.doc_count:p.chunks)||0} chunks</span></div>`).join('')
+    : '<div class="st">no projects — run <b>vectors index &lt;name&gt;</b></div>';
+  L.querySelectorAll('.pj').forEach(el=>el.addEventListener('click',()=>chooseProject(+el.getAttribute('data-i'))));
+  $('picker').classList.add('show'); }
+function hidePicker(){ $('picker').classList.remove('show'); }
+function chooseProject(i){ const p=PROJECTS[i]; if(!p) return; hidePicker();
+  if(PMODE==='static'){ bootFromData({status:p.status, graph:p.graph}); }
+  else { PROJECT=p.name; history.replaceState(null,'','?project='+encodeURIComponent(p.name)); loadStatus(); loadGraph(); }
+  $('switch').textContent='▾ '+p.name; }
+function initStaticProjects(list){ PROJECTS=list; PMODE='static';
+  $('switch').style.display='block'; $('switch').onclick=showPicker;
+  if(list.length===1) chooseProject(0); else showPicker(); }
+async function initServerProjects(){ try{
+    const r=await (await fetch(API+'/api/projects')).json();
+    PROJECTS=r.projects||r||[]; PMODE='server';
+    if(!PROJECT && r.active) PROJECT=r.active;
+    if(PROJECTS.length>1){ $('switch').style.display='block'; $('switch').onclick=showPicker; }
+  }catch(_){ } }
 
 // procedural offline preview (file:// or VINDEX_DEMO)
 function _gauss(){ let u=0,v=0; while(!u)u=Math.random(); while(!v)v=Math.random();
@@ -521,9 +566,10 @@ function resize(){ const w=cv.clientWidth||innerWidth, h=cv.clientHeight||innerH
 new ResizeObserver(resize).observe(cv); resize();
 
 buildLegend(); frame();
-if(window.VINDEX_DATA){ bootFromData(window.VINDEX_DATA); }
+if(window.VINDEX_PROJECTS && window.VINDEX_PROJECTS.length){ initStaticProjects(window.VINDEX_PROJECTS); }
+else if(window.VINDEX_DATA){ bootFromData(window.VINDEX_DATA); }
 else if(window.VINDEX_DEMO || location.protocol==='file:'){ AUTOSPIN=true; bootFromData(makeDemoData()); }
-else { loadStatus(); loadGraph(); }
+else { initServerProjects(); loadStatus(); loadGraph(); }
 </script>
 </body>
 </html>

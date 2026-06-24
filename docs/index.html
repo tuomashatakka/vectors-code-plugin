@@ -180,8 +180,8 @@ global        fan out across projects → merge → one rerank → tagged hits</
   <section>
     <h2>Ways to use it</h2>
     <dl class="facts">
-      <div><dt>CLI</dt><dd>Create projects, ingest, run one-off queries (project or global), list projects, serve the viewer, manage the daemon — <code>vectors</code> (alias <code>vindex</code>).</dd></div>
-      <div><dt>REPL</dt><dd><code>vectors repl</code> — a query-first shell; a bare line searches the current project, <code>:global Q</code> searches everything, <code>:project NAME</code> switches scope.</dd></div>
+      <div><dt>CLI</dt><dd>One-shot <code>vectors index ‹name›</code> (create + attach + ingest), <code>vectors search</code> (project or <code>--global</code>), <code>vectors ls</code>, <code>vectors viewer</code>, <code>vectors daemon</code>, <code>vectors doctor</code>.</dd></div>
+      <div><dt>Interactive TUI</dt><dd>Bare <code>vectors</code> opens a terminal UI (built on <code>opentui</code>) with command autocomplete, a project switcher (Ctrl-P), and query-first search.</dd></div>
       <div><dt>MCP server</dt><dd>13 live tools for Claude / agents: <code>search</code>, <code>search_global</code>, <code>current_project</code>, <code>ingest</code>, <code>create_project</code>, <code>validate_citations</code>, <code>recall_intents</code>, and more.</dd></div>
       <div><dt>3D viewer</dt><dd>A three.js “synapse” navigator that PCAs a project's embedding space and lets you explore it interactively.</dd></div>
     </dl>
@@ -193,9 +193,10 @@ global        fan out across projects → merge → one rerank → tagged hits</
       Every project ships a 3D “synapse” viewer that PCAs the embeddings to three
       dimensions and links nearest neighbours. Below is a live, procedural demo —
       <b>drag to orbit, scroll to zoom, type to search</b>. It runs entirely in the
-      browser with no server. Your real index renders the same way; export a
-      standalone copy of it with <code>vectors viewer export</code> and open the
-      HTML directly.
+      browser with no server. Export a self-contained copy of your real index with
+      <code>vectors viewer</code> — a single HTML file with every project baked in
+      and a picker to switch between them, openable straight from <code>file://</code> —
+      or run <code>vectors viewer --serve</code> for live, unsampled data.
     </p>
     <div class="viewer-frame">
       <iframe src="viewer-demo.html" title="3D embedding viewer — live demo" loading="lazy"></iframe>
@@ -204,23 +205,22 @@ global        fan out across projects → merge → one rerank → tagged hits</
 
   <section>
     <h2>Quickstart</h2>
-    <pre><code># Postgres + pgvector (one-line local DB)
-docker run -d --name vectors-pg -e POSTGRES_PASSWORD=x -e POSTGRES_DB=vectors \
-  -p 5432:5432 pgvector/pgvector:pg16
-export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
+    <pre><code># one command provisions everything — Bun, Postgres + pgvector,
+# the global `vectors` CLI, the daemon, and MCP wiring. No Docker.
+bash setup.sh
 
-bun install &amp;&amp; bun install -g     # deps + the global `vectors` CLI
-vectors setup                       # apply the schema + default embedding space
-bash install.sh                     # wire every editor / MCP found
+# index the project you're standing in (create + attach + ingest, one step)
+cd ~/Projects/scene
+vectors index scene                 # path defaults to cwd; git remote → citation URLs
 
-# index the project you're standing in
-vectors project create scene --root .
-vectors project add-source scene --id code --path . --glob '**/*.ts' --glob '**/*.md'
-vectors project ingest scene
-vectors query "how does the flock pick ideas?" --project scene
+# search the current project
+vectors search "how does the flock pick ideas?"
 
 # ask across every project at once
-vectors search "welded indexed geometry deterministic seed"</code></pre>
+vectors search --global "welded indexed geometry deterministic seed"
+
+# …or just open the interactive shell
+vectors</code></pre>
   </section>
 
   <section>
@@ -245,6 +245,7 @@ vectors search "welded indexed geometry deterministic seed"</code></pre>
       vectors and memory live side by side and cross-reference cleanly. Full DDL
       ships in the repo; the complete spec is in <code>spec.md</code>.
     </p>
+    <img src="schema.svg" alt="Entity-relationship diagram: embedding_space hub and physical emb_* tables; project with documents/chunks, sessions/messages, the memory_node L0–L3 ladder and facts; global references; polymorphic link edges; the digest_job queue; and intent memory." style="width:100%;height:auto;display:block;margin:18px 0 8px;">
     <ul class="clean">
       <li><b>One store, four kinds of knowledge</b> — chunk vectors, chat history, external references (URLs, Drive, Notion), and your own document/codebase content.</li>
       <li><b>Multi-project, not isolated</b> — a project hierarchy plus sibling links; content is tagged by project yet still searchable globally.</li>
@@ -266,7 +267,7 @@ vectors search "welded indexed geometry deterministic seed"</code></pre>
       <li><b>Digest worker</b> — drains a job queue, embedding content and running local-Ollama summarization, fact, and reference extraction.</li>
       <li><b>Optional daily backup</b> — <code>pg_dump</code> pushed to OneDrive or Google Drive (local sync folder or <code>rclone</code>), an Obsidian vault, and/or a Notion manifest, with retention.</li>
     </ul>
-    <p class="muted" style="margin-top:16px">Manage it with <code>vectors daemon install | run | status | restart | logs | uninstall</code>.</p>
+    <p class="muted" style="margin-top:16px">Manage it with <code>vectors daemon start | stop | status | logs</code>.</p>
   </section>
 
   <footer>

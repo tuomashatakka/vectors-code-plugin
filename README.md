@@ -45,78 +45,75 @@ JS/WASM). Unsupported languages fall back to the line-window chunker.
 - [Bun](https://bun.sh) ≥ 1.2 (runs the TypeScript directly — no build step)
 - PostgreSQL 16 + [pgvector](https://github.com/pgvector/pgvector) ≥ 0.7
 
-Spin up a local database in one line:
+`setup.sh` installs both for you (Homebrew on macOS, apt on Linux) — see
+**Install**. **No Docker required.** If you already run Postgres, just point
+`VINDEX_DSN` at it:
 
 ```bash
-docker run -d --name vectors-pg -e POSTGRES_PASSWORD=x -e POSTGRES_DB=vectors \
-  -p 5432:5432 pgvector/pgvector:pg16
-export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
+export VINDEX_DSN=postgres://localhost:5432/vectors
 ```
 
 ## Install
 
-```bash
-bun install                     # install dependencies
-bun install -g                  # install the global `vectors` / `vindex` CLI
-# (or, from a clone: `bun link`, or `vectors setup --link`)
-```
-
-`vectors setup` installs deps (if missing), applies the schema + migrations to
-`$VINDEX_DSN`, and ensures the default embedding space:
+One command provisions **everything** — Bun, PostgreSQL 16 + pgvector, the
+schema, the global `vectors` CLI, the background daemon, and MCP/skill wiring for
+every detected editor. **No Docker.**
 
 ```bash
-vectors setup                   # deps + schema + default space
-vectors setup --link            # ...also link the global `vectors` bin
-vectors setup --daemon          # ...also install the background daemon
+bash setup.sh                   # full install (prompts before the daemon)
+bash setup.sh --yes             # non-interactive (daemon included)
+bash setup.sh --no-daemon       # everything except the daemon
+bash setup.sh --no-db           # skip Postgres provisioning (use existing $VINDEX_DSN)
 vectors doctor                  # verify Bun, DSN, Postgres, pgvector, schema, daemon
 ```
 
-To wire editors / MCP across every detected harness, run the installer:
-
-```bash
-bash install.sh                 # wire Claude Code / Codex / opencode / Claude Desktop / VS Code / Antigravity; asks about the daemon
-bash install.sh --no-daemon     # wire only, skip the daemon
-bash install.sh --yes           # non-interactive, daemon included
-```
-
-It is idempotent; reverse it with `bash uninstall.sh` (`--deps` also drops
-`node_modules`, `--daemon` removes the service). The Postgres store is left
-intact.
+It is idempotent; reverse the editor/MCP wiring + daemon with `bash setup.sh
+--uninstall` (the Postgres store is left intact). `vectors setup` on its own just
+(re)applies the schema + default embedding space to `$VINDEX_DSN`.
 
 ## Usage
 
-The workflow is **setup → create / add-source / ingest → query / search →
-repl → daemon → editor/MCP → viewer**.
+Index a whole project in **one command** — it creates the project, attaches the
+source, and ingests it (incremental, diff-by-hash). The root defaults to the cwd
+and a Git `origin` remote becomes the citation-URL template, so the common case
+needs no flags:
 
 ```bash
-# 1. create a project (root defaults to the cwd)
-vectors project create scene --root ~/Documents/Projects/scene
+# index the project you're standing in
+cd ~/Documents/Projects/scene
+vectors index scene                        # root = cwd; git remote → blob URLs
 
-# 2. attach a source and ingest it (incremental, diff-by-hash)
-vectors project add-source scene --id code --path ~/Documents/Projects/scene \
+# or point at a path with explicit globs; re-run anytime → incremental re-ingest
+vectors index scene ~/Documents/Projects/scene \
   --glob '**/*.ts' --glob '**/*.md'
-vectors project ingest scene
+vectors index scene --rebuild              # wipe + rebuild from scratch
 
-# 3. search ONE project (hybrid dense+lexical, reranked)
-vectors query "deterministic seeded geometry" --project scene
-# bare verbs work too:  vectors ingest scene   /   vectors create scene …
+# search the current project (hybrid dense+lexical, reranked)
+vectors search "deterministic seeded geometry"
 
-# 4. search ACROSS every project (or a subset), merged + reranked
-vectors search "welded indexed geometry deterministic seed"
+# search ACROSS every project (or a subset), merged + reranked
+vectors search --global "welded indexed geometry deterministic seed"
 vectors search "RRF fusion" --projects scene,rustbook --json
+# (an `all:` query prefix also forces global)
 
-# 5. housekeeping
-vectors projects                # all projects + doc/chunk counts (* = active)
-vectors here                    # which project does this dir resolve to?
-vectors status scene            # config + stats
-
-# 6. interactive shell (a bare line searches the current project)
-vectors repl                    # :project NAME · :global Q · :help · :quit
+# list projects (* = active); pass a name for its config + stats
+vectors ls
+vectors ls scene
 ```
 
 `--no-rerank` gives raw fused order (faster, skips the cross-encoder); `--json`
 emits machine-readable output. The project is auto-resolved from the cwd when
 omitted.
+
+### Interactive shell
+
+Run `vectors` with no arguments to open the **interactive TUI** (built on
+`opentui`): command autocomplete over the registry, a project switcher (Ctrl-P),
+and a query-first prompt — a bare line searches the active project.
+
+```bash
+vectors                         # autocomplete · Ctrl-P switch · :project NAME · :help · :q
+```
 
 ### Background daemon
 
@@ -126,14 +123,14 @@ Keeps the store current: a **chat feeder** (mirrors Claude transcripts into
 extraction). Install as a service (launchd on macOS, systemd `--user` on Linux):
 
 ```bash
-vectors daemon install          # install as a service
-vectors daemon run              # ...or run in the foreground (Ctrl-C to stop)
-vectors daemon status | restart | logs | uninstall
+vectors daemon start            # install + start the service
+vectors daemon stop             # stop + remove it
+vectors daemon status | logs
 ```
 
 ### Editors / MCP
 
-`bash install.sh` wires the bundled `vectors` MCP server into every harness it
+`bash setup.sh` wires the bundled `vectors` MCP server into every harness it
 finds (skill + `/vectors` command + MCP entry). MCP tools:
 
 `search`, `search_global`, `current_project`, `list_projects`, `project_status`,
@@ -146,12 +143,15 @@ plugin installs at `bun ${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts`).
 ### 3D viewer
 
 ```bash
-vectors serve scene             # synapse navigator → http://localhost:7341
-vectors viewer export scene.html  # standalone demo HTML (no backend)
+vectors viewer                  # static HTML, every project baked in → docs/vectors-viewer.html
+vectors viewer --serve scene    # live server → http://localhost:7341
 ```
 
-A three.js "synapse" navigator that PCAs the project's embedding space to 3D and
-links nearest neighbours; type to search, drag to orbit.
+A three.js "synapse" navigator that PCAs each project's embedding space to 3D and
+links nearest neighbours; type to search, drag to orbit. The static export is a
+single self-contained file with a **project picker** — open it straight from
+`file://`, no server process. `--serve` streams fresh, unsampled data and the
+same picker switches projects live.
 
 ## Environment variables
 
@@ -182,7 +182,7 @@ aliases.
 
 ```
 src/
-  cli/          command registry + dispatch (vectors / vindex)
+  cli/          command registry + dispatch + interactive TUI (tui.ts, opentui)
   db/           pool, schema/migrations, project registry + cwd resolution, ingest
   chunk/        chunker (md/code/text), ast.ts (tree-sitter symbol chunks + import graph), units
   embed/        embedder (mean-pool + L2-norm) + cross-encoder rerank — pure JS/WASM (ONNX)
@@ -207,9 +207,9 @@ rerank so hits are comparable even across embedding models.
 bun run typecheck     # tsc --noEmit
 bun run lint          # eslint (zero warnings enforced)
 bun test              # bun test
-bun run wire          # bash install.sh
-bun run unwire        # bash uninstall.sh
-bun run demo-viewer   # regenerate docs/viewer-demo.html
+bun run wire          # bash setup.sh
+bun run unwire        # bash setup.sh --uninstall
+bun run demo-viewer   # regenerate docs/viewer-demo.html (procedural demo)
 ```
 
 See [`spec.md`](spec.md) for the complete specification and

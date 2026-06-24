@@ -1,6 +1,7 @@
 /**
- * Retrieval commands — `query` (one project) and `search` (across projects),
- * plus `prompt` for printing a reasoning scaffold.
+ * Retrieval — one `search` command. It searches the current project by default;
+ * pass `--global` (or prefix the query with `all:`) or `--projects A,B` to merge
+ * and rerank across projects. The hidden `prompt` prints a reasoning scaffold.
  */
 import { resolveProjectName } from '../../db/projects.ts'
 import { searchProject, searchGlobal } from '../../search/search.ts'
@@ -11,46 +12,38 @@ import type { Command } from '../kit.ts'
 
 export const searchCommands: Command[] = [
   {
-    path:    [ 'query' ],
-    summary: 'search ONE project (hybrid dense+lexical, reranked)',
-    usage:   'vectors query <text...> [--project P] [--topk N] [--no-rerank] [--json]',
+    path:    [ 'search' ],
+    summary: 'search the current project (--global / "all:" searches every project)',
+    usage:   'vectors search <text...> [--project P] [--global] [--projects A,B] [--topk N] [--no-rerank] [--json]',
     options: {
       'project':   { type: 'string' },
-      'topk':      { type: 'string' },
-      'rerank':    { type: 'boolean' },
-      'no-rerank': { type: 'boolean' },
-      'json':      { type: 'boolean' },
-    },
-    async run (ctx) {
-      const project = str(ctx, 'project') ?? await resolveProjectName()
-      const r       = await searchProject(ctx.positionals.join(' '), project, {
-        topk:   num(ctx, 'topk'),
-        rerank: !flag(ctx, 'no-rerank'),
-      })
-      printResult(r, flag(ctx, 'json'))
-    },
-  },
-  {
-    path:    [ 'search' ],
-    summary: 'search ACROSS every project (or a --projects subset), merged + reranked',
-    usage:   'vectors search <text...> [--topk N] [--projects A,B] [--no-rerank] [--json]',
-    options: {
-      'topk':      { type: 'string' },
+      'global':    { type: 'boolean' },
       'projects':  { type: 'string' },
+      'topk':      { type: 'string' },
       'no-rerank': { type: 'boolean' },
       'json':      { type: 'boolean' },
     },
     async run (ctx) {
-      const r = await searchGlobal(ctx.positionals.join(' '), {
-        topk:     num(ctx, 'topk'),
-        rerank:   !flag(ctx, 'no-rerank'),
-        projects: str(ctx, 'projects')?.split(','),
-      })
+      let text       = ctx.positionals.join(' ')
+      const rerank   = !flag(ctx, 'no-rerank')
+      const topk     = num(ctx, 'topk')
+      const projects = str(ctx, 'projects')?.split(',')
+
+      let global = flag(ctx, 'global') || Boolean(projects)
+      if (text.startsWith('all:')) {
+        text   = text.slice(4).trim()
+        global = true
+      }
+
+      const r = global
+        ? await searchGlobal(text, { topk, rerank, projects })
+        : await searchProject(text, str(ctx, 'project') ?? await resolveProjectName(), { topk, rerank })
       printResult(r, flag(ctx, 'json'))
     },
   },
   {
     path:    [ 'prompt' ],
+    hidden:  true,
     summary: 'print a reasoning-scaffold prompt template',
     usage:   'vectors prompt [name]',
     async run (ctx) {

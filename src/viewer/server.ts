@@ -38,7 +38,7 @@ function viewerHtmlPath (): string {
   throw new Error('viewer.html not found in assets/')
 }
 
-interface ProjectCtx {
+export interface ProjectCtx {
   id:         string;
   name:       string;
   embedModel: string;
@@ -68,7 +68,7 @@ interface GraphState {
 
 const graphState: GraphState = { idToIdx: new Map(), vecs: [], pca: null, scale: 1 }
 
-async function resolveCtx (projectName: string): Promise<ProjectCtx> {
+export async function resolveCtx (projectName: string): Promise<ProjectCtx> {
   const proj = await getProject(projectName)
   if (!proj)
     throw new Error(`project not found: ${projectName}`)
@@ -126,7 +126,7 @@ function snippet (text: string | null, len = 240): string {
     .slice(0, len)
 }
 
-interface GraphResult {
+export interface GraphResult {
   nodes: GraphNode[];
   links: [number, number, number][];
   k:     number;
@@ -134,7 +134,7 @@ interface GraphResult {
 
 // Build the sampled graph: PCA(3) positions + knn synapse links. Mirrors
 //  build_graph() in viewer_server.py (numpy SVD -> ml-pca SVD here).
-async function buildGraph (ctx: ProjectCtx, n: number, k: number): Promise<GraphResult> {
+export async function buildGraph (ctx: ProjectCtx, n: number, k: number): Promise<GraphResult> {
   const rows = await sampleChunks(ctx, n)
   const vecs = rows.map(r => parseVector(r.embedding))
   if (vecs.length === 0) {
@@ -292,7 +292,7 @@ interface StatusResult {
   state:       string;
 }
 
-async function buildStatus (ctx: ProjectCtx): Promise<StatusResult> {
+export async function buildStatus (ctx: ProjectCtx): Promise<StatusResult> {
   const counts = await q1<{ chunks: number; embedded: number; documents: number }>(
     `SELECT count(c.id)::int AS chunks,
             count(c.embedding_id)::int AS embedded,
@@ -312,44 +312,59 @@ async function buildStatus (ctx: ProjectCtx): Promise<StatusResult> {
 
 const DEFAULT_PORT = VIEWER_PORT
 
-/** Start the viewer HTTP server for `projectName`. Resolves once listening. */
-export async function runViewer (projectName: string, port: number = DEFAULT_PORT): Promise<void> {
-  const ctx      = await resolveCtx(projectName)
+/**
+ * Start the viewer HTTP server. Resolves once listening. It serves `defaultName`
+ * but every /api route may target another project via `?project=<name>`, so the
+ * in-page project switcher works against the live server too.
+ */
+export async function runViewer (defaultName: string, port: number = DEFAULT_PORT): Promise<void> {
   const htmlPath = viewerHtmlPath()
+  const ctxCache = new Map<string, ProjectCtx>()
+  const ctxFor   = async (name: string): Promise<ProjectCtx> => {
+    let c = ctxCache.get(name)
+    if (!c) {
+      c = await resolveCtx(name)
+      ctxCache.set(name, c)
+    }
+    return c
+  }
+  await ctxFor(defaultName) // validate up front
 
   const server = createServer((req, res) => {
     const url      = new URL(req.url ?? '/', 'http://localhost')
     const sendJson = (obj: unknown, code = 200) => {
-      const body = JSON.stringify(obj)
       res.writeHead(code, {
         'Content-Type':                'application/json',
         'Cache-Control':               'no-store',
         'Access-Control-Allow-Origin': '*',
       })
-      res.end(body)
+      res.end(JSON.stringify(obj))
     }
 
     // eslint-disable-next-line complexity -- request handler dispatches several /api routes
     void (async () => {
       try {
-        const path = url.pathname
+        const path  = url.pathname
+        const pname = url.searchParams.get('project') || defaultName
         if (path === '/' || path === '/index.html') {
           const body = await readFile(htmlPath)
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
           res.end(body)
         }
+        else if (path === '/api/projects')
+          sendJson({ projects: await listProjects(), active: defaultName })
         else if (path === '/api/status')
-          sendJson(await buildStatus(ctx)); else if (path === '/api/graph') {
+          sendJson(await buildStatus(await ctxFor(pname))); else if (path === '/api/graph') {
           const n = Math.min(1200, Math.max(50, Number(url.searchParams.get('n') ?? '400') || 400))
           const k = Math.min(6, Math.max(1, Number(url.searchParams.get('k') ?? '3') || 3))
-          sendJson(await buildGraph(ctx, n, k))
+          sendJson(await buildGraph(await ctxFor(pname), n, k))
         }
         else if (path === '/api/search') {
           const query = (url.searchParams.get('q') ?? '').trim()
           if (!query)
             sendJson({ error: 'empty query' }, 400)
           else
-            sendJson(await runSearch(ctx, query))
+            sendJson(await runSearch(await ctxFor(pname), query))
         }
         else
           sendJson({ error: 'not found' }, 404)
@@ -368,7 +383,7 @@ export async function runViewer (projectName: string, port: number = DEFAULT_POR
 
   await new Promise<void>(resolve => {
     server.listen(port, '127.0.0.1', () => {
-      console.log(`synapse viewer (${ctx.name})  ->  http://localhost:${port}`)
+      console.log(`synapse viewer (${defaultName})  ->  http://localhost:${port}`)
       resolve()
     })
   })

@@ -25,6 +25,7 @@ export interface Command {
   usage?:       string
   options?:     OptDefs
   longRunning?: boolean // skip closePool()/exit after run (servers)
+  hidden?:      boolean // omit from the default `vectors help` listing
   run:          (ctx: Ctx) => Promise<void>
 }
 

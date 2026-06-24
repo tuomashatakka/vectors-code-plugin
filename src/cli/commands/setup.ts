@@ -2,7 +2,8 @@
  * `vectors setup` — the single setup command. Installs deps (if missing),
  * applies the schema + migrations against the resolved DSN, ensures the default
  * embedding space, and optionally links the global `vectors` bin and installs
- * the background daemon. Editor/MCP wiring is delegated to install.sh.
+ * the background daemon. Full provisioning (Postgres, daemon, editor/MCP wiring)
+ * lives in setup.sh; this command is the re-runnable schema/space core.
  */
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -46,7 +47,7 @@ export const setupCommands: Command[] = [
       console.log(`   schema ready. default space: ${space.model}/${space.dim} (${space.metric}) -> ${space.table_name}`)
 
       if (flag(ctx, 'link')) {
-        console.log('>> linking global `vectors` / `vindex` bin (bun link)')
+        console.log('>> linking global `vectors` bin (bun link)')
         await sh([ 'bun', 'link' ])
       }
 
@@ -56,8 +57,8 @@ export const setupCommands: Command[] = [
       }
 
       console.log('\n>> setup complete.')
-      console.log('   wire editors / MCP:  bash install.sh')
-      console.log('   verify:              vectors doctor')
+      console.log('   full install / wiring:  bash setup.sh')
+      console.log('   verify:                 vectors doctor')
     },
   },
 ]

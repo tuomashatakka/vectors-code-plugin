@@ -1,138 +1,129 @@
 /**
- * Project lifecycle commands — create, add-source, ingest, reindex, and the
- * read-only listings (projects / list / here / status). Grouped under
- * `vectors project <sub>`; the bare verbs are kept as back-compat aliases.
+ * Project commands. `index` is the whole index flow in one shot — create the
+ * project (if new), attach a source, and ingest it (incremental diff-by-hash).
+ * The root defaults to the cwd and a Git `origin` remote becomes the citation
+ * URL template, so `cd repo && vectors index repo` just works. `ls` lists
+ * projects (and prints one project's config + stats when given a name).
  */
+import { homedir } from 'node:os'
+import { isAbsolute, resolve } from 'node:path'
 import { resolveProjectName, getOrCreateProject, getProject, addSource, listProjects } from '../../db/projects.ts'
-import { ingestProject, reindexProject } from '../../db/ingest.ts'
-import { str, firstName } from '../kit.ts'
-import type { Command, Ctx } from '../kit.ts'
+import { ingestProject } from '../../db/ingest.ts'
+import { assertWritable, assertAllowedRoot } from '../../guards.ts'
+import { str, flag } from '../kit.ts'
+import type { Command } from '../kit.ts'
 import type { SourceConfig } from '../../db/types.ts'
 
 
-async function nameFrom (ctx: Ctx): Promise<string> {
-  return firstName(ctx.argv) ?? await resolveProjectName()
+/** A broad code+docs default so `vectors index <name>` needs no `--glob`. */
+const DEFAULT_GLOBS = [ '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,kt,rb,php,c,h,cc,cpp,hpp,cs,swift,scala,sh,sql,md,mdx,mdc,txt,rst,json,yaml,yml,toml}' ]
+
+/** Expand a leading `~` and resolve to an absolute path. */
+function resolvePathArg (p: string): string {
+  const s = p === '~' ? homedir() : p.startsWith('~/') ? homedir() + p.slice(1) : p
+  return isAbsolute(s) ? resolve(s) : resolve(process.cwd(), s)
+}
+
+/** Derive a GitHub-style blob base-url ({path} template) from `origin`. */
+async function gitBaseUrl (root: string): Promise<string | null> {
+  try {
+    const p = Bun.spawn([ 'git', '-C', root, 'remote', 'get-url', 'origin' ], { stdout: 'pipe', stderr: 'ignore' })
+    if (await p.exited !== 0)
+      return null
+
+    const raw = (await new Response(p.stdout).text()).trim()
+    const m   = raw.match(/^(?:git@|ssh:\/\/git@|https?:\/\/(?:[^@/]+@)?)([^:/]+)[:/](.+?)(?:\.git)?\/?$/)
+    return m ? `https://${m[1]}/${m[2]}/blob/HEAD/{path}` : null
+  }
+  catch {
+    return null
+  }
 }
 
 export const projectCommands: Command[] = [
   {
-    path:    [ 'project', 'create' ],
-    aliases: [[ 'create' ]],
-    summary: 'create a new project',
-    usage:   'vectors project create <name> [--root DIR] [--embed MODEL] [--rerank MODEL]',
-    options: { root: { type: 'string' }, embed: { type: 'string' }, rerank: { type: 'string' }},
+    path:    [ 'index' ],
+    summary: 'create + ingest a project in one step (incremental on re-run)',
+    usage:   'vectors index <name> [path] [--glob G ...] [--embed MODEL] [--rerank MODEL] [--url TEMPLATE] [--rebuild]',
+    options: {
+      glob:    { type: 'string', multiple: true },
+      embed:   { type: 'string' },
+      rerank:  { type: 'string' },
+      url:     { type: 'string' },
+      rebuild: { type: 'boolean' },
+    },
     async run (ctx) {
       const name = ctx.positionals[0]
       if (!name)
-        throw new Error('usage: vectors project create <name> [--root DIR] [--embed MODEL]')
+        throw new Error('usage: vectors index <name> [path] [--glob G ...]')
 
-      const p = await getOrCreateProject(name, {
-        root:         str(ctx, 'root') ?? process.cwd(),
+      const root = resolvePathArg(ctx.positionals[1] ?? process.cwd())
+      assertWritable('index')
+      assertAllowedRoot(root)
+
+      await getOrCreateProject(name, {
+        root,
         embed_model:  str(ctx, 'embed'),
         rerank_model: str(ctx, 'rerank'),
       })
-      console.log(`created project '${p.name}' (space ${p.space_id})`)
-    },
-  },
-  {
-    path:    [ 'project', 'add-source' ],
-    aliases: [[ 'add-source' ]],
-    summary: 'add an ingest source to a project',
-    usage:   'vectors project add-source [name] [--id ID] [--type dir|repo] [--path PATH] [--glob GLOB ...] [--base-url URL]',
-    options: {
-      'id':       { type: 'string' },
-      'type':     { type: 'string' },
-      'path':     { type: 'string' },
-      'glob':     { type: 'string', multiple: true },
-      'base-url': { type: 'string' },
-    },
-    async run (ctx) {
-      const name                 = ctx.positionals[0] || await resolveProjectName()
+
+      const globList             = ctx.values.glob as string[] | undefined
       const source: SourceConfig = {
-        id:       str(ctx, 'id') || 'default',
-        type:     (str(ctx, 'type') || 'dir') as SourceConfig['type'],
-        path:     str(ctx, 'path') || process.cwd(),
-        globs:    (ctx.values.glob as string[]) || [ '**/*' ],
-        base_url: str(ctx, 'base-url') || null,
+        id:       'default',
+        type:     'dir',
+        path:     root,
+        globs:    globList?.length ? globList : DEFAULT_GLOBS,
+        base_url: str(ctx, 'url') ?? await gitBaseUrl(root),
       }
       await addSource(name, source)
-      console.log(`added source '${source.id}' (${source.globs.join(',')}) to '${name}'`)
+
+      console.log(`indexing '${name}' <- ${root}`)
+
+      const stats = await ingestProject(name, flag(ctx, 'rebuild'))
+      console.log(`  ${stats.filesChanged}/${stats.filesScanned} files changed, ${stats.chunks} chunks embedded`)
     },
   },
   {
-    path:    [ 'project', 'ingest' ],
-    aliases: [[ 'ingest' ]],
-    summary: "(re)ingest a project's configured sources (incremental)",
-    usage:   'vectors project ingest [name]',
+    path:    [ 'ls' ],
+    summary: 'list projects with stats (* = active); pass a name for its config',
+    usage:   'vectors ls [name] [--json]',
+    options: { json: { type: 'boolean' }},
     async run (ctx) {
-      const name  = await nameFrom(ctx)
-      const stats = await ingestProject(name)
-      console.log(`ingested '${name}': ${stats.filesChanged}/${stats.filesScanned} files changed, ${stats.chunks} chunks`)
-    },
-  },
-  {
-    path:    [ 'project', 'reindex' ],
-    aliases: [[ 'reindex' ]],
-    summary: 'wipe and rebuild a project from scratch',
-    usage:   'vectors project reindex [name]',
-    async run (ctx) {
-      const name  = await nameFrom(ctx)
-      const stats = await reindexProject(name)
-      console.log(`reindexed '${name}': ${stats.chunks} chunks from ${stats.filesScanned} files`)
-    },
-  },
-  {
-    path:    [ 'projects' ],
-    summary: 'list all projects with document/chunk counts (* = active)',
-    usage:   'vectors projects',
-    async run () {
-      const rows   = await listProjects()
-      const active = await resolveProjectName()
-      for (const p of rows) {
-        const mark = p.name === active ? '*' : ' '
-        console.log(`${mark} ${p.name.padEnd(24)} ${p.documents} docs  ${p.chunks} chunks  (${p.embedded} embedded)`)
-      }
-    },
-  },
-  {
-    path:    [ 'list' ],
-    summary: 'list project names, one per line',
-    usage:   'vectors list',
-    async run () {
-      for (const p of await listProjects())
-        console.log(p.name)
-    },
-  },
-  {
-    path:    [ 'here' ],
-    summary: 'print the project the current directory resolves to',
-    usage:   'vectors here',
-    async run () {
-      console.log(await resolveProjectName())
-    },
-  },
-  {
-    path:    [ 'status' ],
-    aliases: [[ 'project', 'status' ]],
-    summary: "show a project's config and stats",
-    usage:   'vectors status [name]',
-    async run (ctx) {
-      const name = await nameFrom(ctx)
-      const p    = await getProject(name)
-      if (!p) {
-        console.log(`project '${name}' not found`)
+      const name = ctx.positionals[0]
+      if (name) {
+        const p = await getProject(name)
+        if (!p) {
+          console.log(`project '${name}' not found`)
+          return
+        }
+
+        const row = (await listProjects()).find(x => x.name === name)
+        console.log(JSON.stringify({
+          name,
+          root:         p.root_path,
+          embed_model:  p.embed_model,
+          rerank_model: p.rerank_model,
+          sources:      p.sources,
+          ...row,
+        }, null, 2))
         return
       }
 
-      const row = (await listProjects()).find(x => x.name === name)
-      console.log(JSON.stringify({
-        name,
-        root:         p.root_path,
-        embed_model:  p.embed_model,
-        rerank_model: p.rerank_model,
-        sources:      p.sources.length,
-        ...row,
-      }, null, 2))
+      const rows = await listProjects()
+      if (flag(ctx, 'json')) {
+        console.log(JSON.stringify(rows, null, 2))
+        return
+      }
+      if (!rows.length) {
+        console.log('no projects yet — run `vectors index <name> [path]`')
+        return
+      }
+
+      const active = await resolveProjectName()
+      for (const p of rows) {
+        const mark = p.name === active ? '*' : ' '
+        console.log(`${mark} ${p.name.padEnd(24)} ${String(p.documents).padStart(5)} docs  ${String(p.chunks).padStart(6)} chunks  (${p.embedded} embedded)`)
+      }
     },
   },
 ]

@@ -132,17 +132,18 @@ export interface ProjectSummary {
   embedded:  number;
 }
 
-/** List projects with document/chunk counts (for `vindex projects` / status). */
+/** List projects with document/chunk counts (for `vectors ls` / status). */
 export async function listProjects (): Promise<ProjectSummary[]> {
+  // Scalar subqueries, not parallel LEFT JOINs: joining a project's document and
+  // chunk children in one query is a cartesian product that multiplies the chunk
+  // count by the document count.
   return q<ProjectSummary>(`
     SELECT p.name,
-           count(DISTINCT d.id)::int AS documents,
-           count(c.id)::int          AS chunks,
-           count(c.embedding_id)::int AS embedded
+           (SELECT count(*) FROM document d WHERE d.project_id = p.id)::int AS documents,
+           (SELECT count(*) FROM chunk c    WHERE c.project_id = p.id)::int AS chunks,
+           (SELECT count(*) FROM chunk c    WHERE c.project_id = p.id
+                                              AND c.embedding_id IS NOT NULL)::int AS embedded
     FROM project p
-    LEFT JOIN document d ON d.project_id = p.id
-    LEFT JOIN chunk c    ON c.project_id = p.id
-    GROUP BY p.name
     ORDER BY p.name
   `)
 }

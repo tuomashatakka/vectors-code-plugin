@@ -59,17 +59,13 @@ lean on **global search**, which doesn't care where you are.
 
 ## Setup (once)
 
-Requires Bun ≥ 1.2 and PostgreSQL 16 + pgvector ≥ 0.7.
+Requires Bun ≥ 1.2 and PostgreSQL 16 + pgvector ≥ 0.7. One command provisions all
+of it — Bun, Postgres + pgvector, the schema, the global `vectors` CLI, the
+daemon, and editor/MCP wiring — with **no Docker**:
 
 ```bash
-docker run -d -e POSTGRES_PASSWORD=x -e POSTGRES_DB=vectors \
-  -p 5432:5432 pgvector/pgvector:pg16
-export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
-
-bun install                 # dependencies
-vectors setup               # apply the schema + migrations + default embedding space
-vectors setup --link        # ...also link the global `vectors` / `vindex` bin (bun link)
-vectors setup --daemon      # ...also install the background daemon
+bash setup.sh               # full install (Homebrew on macOS / apt on Linux)
+bash setup.sh --no-db       # skip Postgres provisioning (use an existing $VINDEX_DSN)
 vectors doctor              # verify Bun, DSN, Postgres, pgvector, schema, daemon
 ```
 
@@ -80,45 +76,40 @@ cache under `~/.cache/huggingface`. Override models with
 
 ## Core workflow
 
-Always **create a project → add sources → ingest → query**. Pick the chunking
-strategy to match the corpus (`markdown`, `code`, `text`, or `auto` per
-extension). A project over a local directory is rooted there so auto-resolution
-works immediately.
+**Index a project in one command** — `vectors index <name> [path]` creates the
+project, attaches the source, and ingests it (incremental diff-by-hash). The root
+defaults to the cwd and a Git `origin` remote becomes the citation-URL template;
+re-run any time for an incremental update, `--rebuild` wipes first.
 
 ```bash
-# 1. index the project you're standing in (root defaults to the cwd)
+# 1. index the project you're standing in (root = cwd)
 cd ~/Documents/Projects/scene
-vectors project create scene --root .
-vectors project add-source scene --id code --path . --glob '**/*.ts' --glob '**/*.md'
-vectors project ingest scene            # incremental; project resolved from cwd
-vectors query "how does the flock pick ideas?"
+vectors index scene
+vectors search "how does the flock pick ideas?"   # current project
 
-# 2. a folder of notes
-vectors project create notes --root ~/Documents/notes
-vectors project add-source notes --path ~/Documents/notes --glob '**/*.md'
-vectors project ingest notes
+# 2. a folder of notes — explicit path + globs
+vectors index notes ~/Documents/notes --glob '**/*.md'
 
-# 3. a git repo, with public URLs reconstructed for each hit
-vectors project add-source rustbook --type repo --path ~/src/book \
-  --glob '**/*.md' --base-url 'https://doc.rust-lang.org/book/{path}.html'
-vectors project ingest rustbook
+# 3. a repo with public URLs reconstructed for each hit
+vectors index rustbook ~/src/book --glob '**/*.md' \
+  --url 'https://doc.rust-lang.org/book/{path}'
 
 # ask across EVERY project at once (the global context)
-vectors search "welded indexed geometry deterministic seed"
+vectors search --global "welded indexed geometry deterministic seed"
 
 # housekeeping
-vectors projects        # all projects + doc/chunk counts (* = active)
-vectors here            # which project does this dir resolve to?
-vectors status scene    # config + stats
-vectors reindex scene   # wipe + rebuild
-vectors serve  scene    # 3D viewer → http://localhost:7341
-vectors viewer export scene.html   # standalone viewer (no server)
+vectors ls              # all projects + doc/chunk counts (* = active)
+vectors ls scene        # one project's config + stats
+vectors index scene --rebuild      # wipe + rebuild
+vectors viewer                     # static offline viewer (all projects baked in)
+vectors viewer --serve scene       # live 3D viewer → http://localhost:7341
 ```
 
 Add `--no-rerank` for raw fused order (faster, skips the cross-encoder), `--json`
-for machine-readable output, and on `search` use `--projects a,b` to scope to a
-subset. `vectors repl` is a query-first interactive shell (bare line = search the
-current project; `:project NAME`, `:global Q`, `:help`, `:quit`).
+for machine-readable output, and on `search` use `--projects a,b` to scope global
+search to a subset (or prefix the query with `all:`). Run **`vectors`** with no
+arguments for the interactive TUI (command autocomplete, Ctrl-P project switcher,
+query-first prompt).
 
 ## AST + symbol-graph ingestion
 
@@ -142,7 +133,7 @@ hit a `unit_type`. Citations/claims can be validated against the corpus
 
 ## MCP server
 
-`vectors mcp` runs the stdio server; `bash install.sh` wires it into every
+`vectors mcp` runs the stdio server; `bash setup.sh` wires it into every
 detected harness (the bundled `.mcp.json` points plugin installs at
 `bun ${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts`). 13 tools:
 
@@ -207,12 +198,12 @@ a **chat feeder** (mirrors Claude transcripts into `session`/`message`), a
 **source feeder** (re-ingests changed files), and a **digest worker** (embeds new
 content via `LISTEN/NOTIFY` + poll, runs optional local-Ollama summaries / fact
 extraction). The searchable path never needs Ollama. Manage with
-`vectors daemon install | run | status | restart | logs | uninstall`. See
+`vectors daemon start | stop | status | logs`. See
 [`daemon/README.md`](daemon/README.md).
 
 ## Bundled files
 
-- `src/cli/` — the `vectors` CLI (registry + commands + REPL).
+- `src/cli/` — the `vectors` CLI (registry + commands + opentui interactive TUI).
 - `src/db/` — pool, schema/migrations, project registry + cwd resolution, ingest.
 - `src/chunk/` — chunker (md/code/text), `ast.ts` (tree-sitter symbol chunks +
   import graph), `units.ts` (`unit_type` classifier).
@@ -222,10 +213,10 @@ extraction). The searchable path never needs Ollama. Manage with
 - `src/intents/store.ts` — Postgres-backed intent memory.
 - `src/daemon/` — supervisor + chat/source feeders + digest worker.
 - `src/mcp/server.ts` — stdio MCP server (13 tools).
-- `src/viewer/` — 3D synapse viewer HTTP + JSON API (PCA); `make_demo.ts` bakes a
-  standalone demo.
+- `src/viewer/` — 3D synapse viewer HTTP + JSON API (PCA); `make_demo.ts` exports
+  a static all-projects viewer (`exportStaticViewer`) + a procedural demo.
 - `hooks/` — `user_prompt_submit.ts` (recall + inject), `stop.ts` (grade).
-- `assets/viewer.html` — 3D synapse navigator (server-backed, baked, or demo mode).
+- `assets/viewer.html` — 3D synapse navigator (live server, baked all-projects with a picker, or procedural demo).
 - `references/architecture.md` — internals & extension points.
 - `references/unified-knowledge-db-spec.md` + `unified-knowledge-db.sql` — the
   full unified-store design + DDL.

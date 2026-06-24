@@ -428,9 +428,8 @@ store changes.
 ## 12. Validating this schema
 
 ```bash
-# Spin up a throwaway Postgres 16 with pgvector and apply the DDL.
-docker run --rm -d -e POSTGRES_PASSWORD=x -p 5432:5432 pgvector/pgvector:pg16
-psql "postgresql://postgres:x@localhost:5432/postgres" \
+# Provision local Postgres 16 + pgvector (bash setup.sh), then apply the DDL.
+psql "$VINDEX_DSN" \
      -f skills/vector-index/references/unified-knowledge-db.sql
 ```
 

@@ -54,7 +54,7 @@ async function checkDaemon (): Promise<void> {
   if (rows.length)
     line(true, 'daemon', `last activity ${rows[0].updated_at} (${rows[0].key})`)
   else
-    line(false, 'daemon', 'no activity recorded — `vectors daemon install`')
+    line(false, 'daemon', 'no activity recorded — `vectors daemon start`')
 }
 
 export const doctorCommands: Command[] = [

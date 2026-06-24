@@ -43,16 +43,14 @@ derived abstraction tasks do.
 ## Manage it with the CLI
 
 ```bash
-vectors daemon install      # install as a service (launchd on macOS, systemd --user on Linux)
+vectors daemon start        # install + start the service (launchd on macOS, systemd --user on Linux)
 vectors daemon status       # service status
-vectors daemon restart      # restart the service
 vectors daemon logs         # follow the output log
-vectors daemon uninstall    # stop + remove the service
-vectors daemon run          # run in the foreground (Ctrl-C to stop) — applies the schema first
+vectors daemon stop         # stop + remove the service
 ```
 
-`vectors setup --daemon` installs it as part of setup; `bash ../../install.sh`
-offers to install it at the end of editor wiring.
+`bash ../../setup.sh` offers to start it at the end of install; `vectors daemon
+start` runs the platform installer below directly.
 
 ## Install directly (env-baked service)
 

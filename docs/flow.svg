@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 450" role="img" aria-labelledby="t d" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
-  <title id="t">vector-index usage flow</title>
-  <desc id="d">Index a project once — create a project, add directory or git sources, then ingest (chunk, embed, store in zvec). Afterwards query it: per-project search or global search across every project, both reranked. Use it from the CLI, the MCP server (Claude Code, opencode, Claude Desktop), the Python library, or the 3D viewer. An optional background daemon keeps projects re-ingested automatically.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 460" role="img" aria-labelledby="t d" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif">
+  <title id="t">vectors usage flow</title>
+  <desc id="d">Index a project in one command: `vectors index NAME [path]` creates the project, attaches a source (path defaults to the cwd, a git remote becomes the citation URL), and ingests it incrementally (chunk, embed, store in Postgres+pgvector). Then retrieve with `vectors search`: the current project by default, or across every project with --global / an all: prefix, both reranked. Use it from the interactive TUI (bare `vectors`), the MCP server, or the 3D viewer (static or live). An optional background daemon keeps projects re-ingested automatically.</desc>
   <defs>
     <marker id="ah" markerWidth="8" markerHeight="8" refX="6.4" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
       <path class="ah" d="M0,0 L7,3.5 L0,7 z"/>
@@ -19,6 +19,7 @@
     }
     .box{ fill:var(--card); stroke:var(--line); stroke-width:1.5; }
     .acc{ fill:var(--accfill); stroke:var(--acc); stroke-width:1.5; }
+    .grp{ fill:none; stroke:var(--acc); stroke-width:1.5; stroke-dasharray:5 5; opacity:.85; }
     .t{ fill:var(--ink); font-weight:600; font-size:15px; }
     .ta{ fill:var(--accink); }
     .s{ fill:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
@@ -29,46 +30,46 @@
     .ah{ fill:var(--acc); }
   </style>
 
-  <!-- section labels -->
-  <text class="hd" x="44" y="44">INDEX · ONCE</text>
-  <text class="hd" x="314" y="170">RETRIEVE · FAST, OFFLINE</text>
+  <!-- INDEX · one command grouping -->
+  <rect class="grp" x="40" y="52" width="824" height="116" rx="12"/>
+  <text class="hd" x="58" y="74">ONE COMMAND · vectors index ‹name› [path]</text>
 
-  <!-- build pipeline -->
-  <rect class="box" x="44" y="60" width="180" height="66" rx="9"/>
-  <text class="t" x="134" y="91" text-anchor="middle">Create project</text>
-  <text class="s" x="134" y="111" text-anchor="middle">name · root · strategy</text>
+  <rect class="box" x="64" y="92" width="220" height="60" rx="9"/>
+  <text class="t" x="174" y="120" text-anchor="middle">Create project</text>
+  <text class="s" x="174" y="139" text-anchor="middle">name · root = cwd</text>
 
-  <rect class="box" x="268" y="60" width="180" height="66" rx="9"/>
-  <text class="t" x="358" y="91" text-anchor="middle">Add sources</text>
-  <text class="s" x="358" y="111" text-anchor="middle">dir / git · globs</text>
+  <rect class="box" x="340" y="92" width="220" height="60" rx="9"/>
+  <text class="t" x="450" y="120" text-anchor="middle">Attach source</text>
+  <text class="s" x="450" y="139" text-anchor="middle">globs · git remote → url</text>
 
-  <rect class="box" x="492" y="60" width="180" height="66" rx="9"/>
-  <text class="t" x="582" y="91" text-anchor="middle">Ingest</text>
-  <text class="s" x="582" y="111" text-anchor="middle">chunk → embed → zvec</text>
+  <rect class="box" x="616" y="92" width="220" height="60" rx="9"/>
+  <text class="t" x="726" y="120" text-anchor="middle">Ingest</text>
+  <text class="s" x="726" y="139" text-anchor="middle">diff-by-hash → embed → pgvector</text>
 
-  <line class="flow" x1="224" y1="93" x2="265" y2="93" marker-end="url(#ah)"/>
-  <line class="flow" x1="448" y1="93" x2="489" y2="93" marker-end="url(#ah)"/>
+  <line class="flow" x1="284" y1="122" x2="337" y2="122" marker-end="url(#ah)"/>
+  <line class="flow" x1="560" y1="122" x2="613" y2="122" marker-end="url(#ah)"/>
 
-  <!-- ingest -> query -->
-  <line class="flow" x1="582" y1="126" x2="582" y2="173" marker-end="url(#ah)"/>
+  <!-- index -> search -->
+  <line class="flow" x1="450" y1="168" x2="450" y2="207" marker-end="url(#ah)"/>
 
-  <rect class="box" x="492" y="176" width="180" height="66" rx="9"/>
-  <text class="t" x="582" y="207" text-anchor="middle">Query</text>
-  <text class="s" x="582" y="227" text-anchor="middle">embed → top-k</text>
+  <!-- RETRIEVE -->
+  <text class="hd" x="340" y="200">RETRIEVE · FAST, OFFLINE</text>
+  <rect class="box" x="340" y="210" width="220" height="62" rx="9"/>
+  <text class="t" x="450" y="239" text-anchor="middle">vectors search ‹query›</text>
+  <text class="s" x="450" y="259" text-anchor="middle">dense + sparse → RRF → rerank</text>
 
-  <!-- branch to results -->
-  <path class="flow" d="M582,242 L582,268 L424,268 L424,297" marker-end="url(#ah)"/>
-  <path class="flow" d="M582,268 L740,268 L740,297" marker-end="url(#ah)"/>
+  <path class="flow" d="M450,272 L450,298 L300,298 L300,327" marker-end="url(#ah)"/>
+  <path class="flow" d="M450,298 L680,298 L680,327" marker-end="url(#ah)"/>
 
-  <rect class="acc" x="314" y="300" width="220" height="66" rx="9"/>
-  <text class="t ta" x="424" y="331" text-anchor="middle">Per-project search</text>
-  <text class="s" x="424" y="351" text-anchor="middle">rerank → ranked hits</text>
+  <rect class="acc" x="180" y="330" width="240" height="62" rx="9"/>
+  <text class="t ta" x="300" y="359" text-anchor="middle">Current project</text>
+  <text class="s" x="300" y="379" text-anchor="middle">default · ranked hits</text>
 
-  <rect class="acc" x="630" y="300" width="220" height="66" rx="9"/>
-  <text class="t ta" x="740" y="331" text-anchor="middle">Global search</text>
-  <text class="s" x="740" y="351" text-anchor="middle">fan-out → merge → rerank</text>
+  <rect class="acc" x="560" y="330" width="240" height="62" rx="9"/>
+  <text class="t ta" x="680" y="359" text-anchor="middle">Global search</text>
+  <text class="s" x="680" y="379" text-anchor="middle">--global / all: → merge → rerank</text>
 
   <!-- captions -->
-  <text class="cap" x="440" y="402" text-anchor="middle">Use it from — CLI · MCP (Claude Code · opencode · Claude Desktop) · Python library · 3D viewer</text>
-  <text class="cap2" x="440" y="424" text-anchor="middle">↻ optional background daemon keeps every project re-ingested automatically</text>
+  <text class="cap" x="450" y="424" text-anchor="middle">Use it from — interactive TUI (bare `vectors`) · MCP server · 3D viewer (static HTML or live `serve`)</text>
+  <text class="cap2" x="450" y="446" text-anchor="middle">↻ optional background daemon keeps every project re-ingested automatically</text>
 </svg>

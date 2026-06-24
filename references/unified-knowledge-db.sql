@@ -19,9 +19,8 @@
 -- autonomous "haiku-level" digest tasks. See unified-knowledge-db-spec.md for the
 -- design rationale behind every table here.
 --
--- Apply against a throwaway instance to validate:
---   docker run --rm -e POSTGRES_PASSWORD=x -p 5432:5432 pgvector/pgvector:pg16
---   psql "postgresql://postgres:x@localhost:5432/postgres" -f unified-knowledge-db.sql
+-- Apply against a local Postgres 16 + pgvector to validate (provision with `bash setup.sh`):
+--   psql "$VINDEX_DSN" -f unified-knowledge-db.sql
 -- =============================================================================
 
 -- ----------------------------------------------------------------------------

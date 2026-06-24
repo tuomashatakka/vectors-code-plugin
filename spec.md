@@ -612,54 +612,44 @@ Claude Code hooks wired via the plugin manifest (`hooks/hooks.json`):
 
 ## 11. CLI surface (`src/cli/`)
 
-`vectors` (alias `vindex`) → `src/cli/index.ts`. A command registry matches the
-**longest** registered path prefix in argv; grouped subcommands also expose bare
-aliases. `vectors --help` lists all commands; `vectors repl` is the interactive
-shell.
+`vectors` → `src/cli/index.ts`. A command registry matches the **longest**
+registered path prefix in argv. Bare `vectors` (no args) launches the interactive
+TUI; `vectors help [--all]` lists commands (`--all` includes hidden agent
+commands). There is **no `vindex` bin** and no legacy multi-step commands.
 
-**core**
-- `vectors setup [--link] [--daemon] [--no-deps] [--yes]` — install deps, apply
-  schema + migrations, ensure default space; `--link` runs `bun link`; `--daemon`
-  installs the background service. Editor/MCP wiring is `install.sh`.
-- `vectors projects` — list projects with doc/chunk counts (`*` = active).
-- `vectors list` — project names, one per line.
-- `vectors here` — the project the cwd resolves to.
-- `vectors status [name]` — a project's config + stats (alias `project status`).
-- `vectors query <text…> [--project P] [--topk N] [--no-rerank] [--json]` — one
-  project (hybrid, reranked).
-- `vectors search <text…> [--topk N] [--projects A,B] [--no-rerank] [--json]` —
-  across every project (or a subset), merged + reranked.
-- `vectors prompt [name]` — print a reasoning-scaffold template
-  (`grounded_answer` default; `decompose`, `citation_contract`).
-- `vectors serve [name]` — 3D synapse viewer HTTP server.
+**primary**
+- `vectors index <name> [path] [--glob G …] [--embed M] [--rerank M] [--url T] [--rebuild]`
+  — the whole index flow in one command: create the project (idempotent), attach a
+  source (path defaults to the cwd; a Git `origin` remote becomes the `{path}` URL
+  template; `--url` overrides), and ingest it incrementally (`--rebuild` wipes
+  first). Guards: `assertWritable` then per-source `assertAllowedRoot`.
+- `vectors search <text…> [--project P] [--global] [--projects A,B] [--topk N] [--no-rerank] [--json]`
+  — searches the current project by default; `--global`, `--projects`, or an
+  `all:` query prefix searches across projects, merged + reranked.
+- `vectors ls [name] [--json]` — list projects with doc/chunk counts (`*` =
+  active); with a name, print that project's config + stats.
+- `vectors viewer [name] [outPath] [--serve]` — write the static all-projects
+  offline viewer (default), or run the live HTTP viewer with `--serve`.
+- `vectors daemon <start|stop|status|logs>` — `start` installs + launches the
+  service (launchd/systemd); `stop` removes it. (Hidden: `daemon run`, the service
+  entry point.)
 - `vectors mcp` — run the stdio MCP server.
+- `vectors setup [--link] [--daemon] [--no-deps] [--yes]` — (re)apply schema +
+  migrations + default space; full provisioning + editor/MCP wiring lives in
+  `setup.sh`.
 - `vectors doctor` — diagnose Bun, DSN, Postgres, pgvector, schema, daemon.
-- `vectors repl` — interactive shell.
 
-**project** — `vectors project <create|add-source|ingest|reindex>` (bare aliases
-`create`/`add-source`/`ingest`/`reindex`):
-- `project create <name> [--root DIR] [--embed MODEL] [--rerank MODEL]`
-- `project add-source [name] [--id ID] [--type dir|repo] [--path PATH] [--glob GLOB …] [--base-url URL]`
-- `project ingest [name]` — incremental
-- `project reindex [name]` — wipe + rebuild
+**hidden (agent / hooks; shown under `vectors help --all`)**
+- `vectors intent <record|recall|resolve|grade|stats>` — intent memory.
+- `vectors prompt [name]` — print a reasoning-scaffold template.
 
-**intent** — `vectors intent <record|recall|resolve|grade|stats>`:
-- `intent record <text…> [--project P] [--session S] [--response R]`
-- `intent recall <text…> [--project P] [--topk N]`
-- `intent resolve <intent> [outcome] [--score N] [--project P]`
-- `intent grade <transcript>`
-- `intent stats`
+### 11.1 Interactive TUI (bare `vectors`)
 
-**daemon** — `vectors daemon <install|uninstall|status|restart|logs|run>`.
-
-**viewer** — `vectors viewer export [outPath]` (alias `export-viewer`).
-
-### 11.1 REPL (`vectors repl`)
-
-Query-first interactive shell over the same registry. A **bare line** runs a
-`query` in the current project. A line starting with a known command verb
-dispatches it. Meta-commands: `:project NAME` (switch current project), `:global
-Q` (run `search Q` across all), `:help` (`:h`), `:quit` (`:q`); Ctrl-D exits.
+Built on `@opentui/core` (`src/cli/tui.ts`), driving the same `match`/`dispatch`
+registry as the flag CLI. Features: command autocomplete over the registry (Tab
+accepts), a project switcher (Ctrl-P), and a query-first prompt — a bare line runs
+a search in the active project. Meta-commands: `:project NAME`, `:help`, `:q`;
+Ctrl-C exits.
 
 ---
 

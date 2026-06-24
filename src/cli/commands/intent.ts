@@ -12,6 +12,7 @@ import type { Command } from '../kit.ts'
 export const intentCommands: Command[] = [
   {
     path:    [ 'intent', 'record' ],
+    hidden:  true,
     summary: 'record a user intent (increments frequency)',
     usage:   'vectors intent record <text...> [--project P] [--session S] [--response R]',
     options: { project: { type: 'string' }, session: { type: 'string' }, response: { type: 'string' }},
@@ -27,6 +28,7 @@ export const intentCommands: Command[] = [
   },
   {
     path:    [ 'intent', 'recall' ],
+    hidden:  true,
     summary: 'recall prior resolutions for a recurring intent (fast, model-free)',
     usage:   'vectors intent recall <text...> [--project P] [--topk N]',
     options: { project: { type: 'string' }, topk: { type: 'string' }},
@@ -42,6 +44,7 @@ export const intentCommands: Command[] = [
   },
   {
     path:    [ 'intent', 'resolve' ],
+    hidden:  true,
     summary: 'record the outcome that resolved an intent',
     usage:   'vectors intent resolve <intent> [outcome] [--score N] [--project P]',
     options: { score: { type: 'string' }, project: { type: 'string' }},
@@ -54,6 +57,7 @@ export const intentCommands: Command[] = [
   },
   {
     path:    [ 'intent', 'grade' ],
+    hidden:  true,
     summary: 'grade pending resolutions from a transcript (Ollama judge or heuristic)',
     usage:   'vectors intent grade <transcript>',
     async run (ctx) {
@@ -64,6 +68,7 @@ export const intentCommands: Command[] = [
   },
   {
     path:    [ 'intent', 'stats' ],
+    hidden:  true,
     summary: 'show frequency leaderboard of recorded intents',
     usage:   'vectors intent stats',
     async run () {

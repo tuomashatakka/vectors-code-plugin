@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
 /**
  * vectors — the unified CLI. A small command registry shared by this
- * flag-driven front-end and the interactive REPL. Each command lives in
+ * flag-driven front-end and the interactive TUI. Each command lives in
  * ./commands/*; dispatch matches the longest registered path in argv.
  *
- *   vectors <group> <sub> [args]   e.g. `vectors project ingest scene`
- *   vectors <verb> [args]          back-compat: `vectors ingest scene`
- *   vectors repl                   interactive shell
- *   vectors --help                 this listing
+ *   vectors                        interactive TUI (autocomplete + switcher)
+ *   vectors <group> <sub> [args]   e.g. `vectors daemon start`
+ *   vectors index <name> [path]    create + ingest a project in one step
+ *   vectors help [--all]           this listing (--all includes agent commands)
  */
 import { closePool } from '../db/pool.ts'
 import { parse } from './kit.ts'
@@ -20,7 +20,6 @@ import { mcpCommands } from './commands/mcp.ts'
 import { setupCommands } from './commands/setup.ts'
 import { doctorCommands } from './commands/doctor.ts'
 import { daemonCommands } from './commands/daemon.ts'
-import { replCommands } from './commands/repl.ts'
 
 
 export const COMMANDS: Command[] = [
@@ -32,7 +31,6 @@ export const COMMANDS: Command[] = [
   ...daemonCommands,
   ...mcpCommands,
   ...doctorCommands,
-  ...replCommands,
 ]
 
 function allPaths (c: Command): string[][] {
@@ -57,30 +55,46 @@ export async function dispatch (cmd: Command, rest: string[]): Promise<boolean> 
   return Boolean(cmd.longRunning)
 }
 
-export function helpText (): string {
+export function helpText (showAll = false): string {
   const groups = new Map<string, Command[]>()
   for (const c of COMMANDS) {
+    if (c.hidden && !showAll)
+      continue
+
     const g = c.path.length > 1 ? c.path[0] : 'core'
     if (!groups.has(g))
       groups.set(g, [])
     groups.get(g)!.push(c)
   }
 
-  const lines: string[] = [ 'vectors — local semantic search over your code & docs\n', 'usage: vectors <command> [args]   (also: vectors repl, vectors --help)\n' ]
+  const lines: string[] = [
+    'vectors — local semantic search over your code & docs\n',
+    'usage: vectors <command> [args]   (bare `vectors` opens the interactive TUI)\n',
+  ]
   for (const [ g, cmds ] of [ ...groups ].sort((a, b) => a[0].localeCompare(b[0]))) {
     lines.push(`${g}:`)
     for (const c of cmds)
       lines.push(`  ${(c.usage ?? c.path.join(' ')).padEnd(58)} ${c.summary}`)
     lines.push('')
   }
+  if (!showAll)
+    lines.push('(run `vectors help --all` to show advanced / agent commands)\n')
   return lines.join('\n')
 }
 
 async function main (): Promise<void> {
   const argv = process.argv.slice(2)
 
-  if (!argv.length || argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help') {
-    console.log(helpText())
+  // Bare invocation -> interactive TUI.
+  if (!argv.length) {
+    const { runTui } = await import('./tui.ts')
+    await runTui()
+    await closePool()
+    return
+  }
+
+  if (argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help') {
+    console.log(helpText(argv.includes('--all')))
     return
   }
 

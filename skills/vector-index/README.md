@@ -19,37 +19,38 @@ VINDEX_DSN              one PostgreSQL + pgvector database
 Requires Bun ≥ 1.2 and PostgreSQL 16 + pgvector ≥ 0.7.
 
 ```bash
-export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
+export VINDEX_DSN=postgres://localhost:5432/vectors   # any Postgres 16 + pgvector
 bun install
 vectors setup                                  # apply schema + default embedding space
 
-# index the project you're standing in (root defaults to the cwd)
+# index the project you're standing in (create + attach + ingest, one step; root = cwd)
 cd ~/Documents/Projects/scene
-vectors project create scene --root .
-vectors project add-source scene --id code --path . --glob '**/*.ts' --glob '**/*.md'
-vectors project ingest scene                   # project resolved from cwd
-vectors query "how does the flock pick ideas?"
+vectors index scene
+vectors search "how does the flock pick ideas?"
 
 # ask across every project
-vectors search "welded indexed geometry deterministic seed"
+vectors search --global "welded indexed geometry deterministic seed"
 
-vectors projects                               # all projects (* = active)
-vectors serve scene                            # 3D viewer at http://localhost:7341
+vectors ls                                     # all projects (* = active)
+vectors viewer --serve scene                   # 3D viewer at http://localhost:7341
 ```
+
+From the repo root, `bash setup.sh` provisions Postgres + pgvector and the global
+CLI for you — **no Docker**.
 
 ## Interfaces
 
 | Use | Entry |
 | --- | --- |
-| Create / ingest / query / global search / serve / daemon | `vectors` CLI (alias `vindex`) |
-| Query-first interactive shell | `vectors repl` |
+| Index / search / global search / viewer / daemon | `vectors` CLI |
+| Interactive shell (autocomplete + Ctrl-P project switcher) | bare `vectors` |
 | Live project-aware tools for Claude / an agent | `vectors mcp` (stdio MCP, 13 tools) |
-| Explore one project's space | `vectors serve` → 3D viewer |
+| Explore one project's space | `vectors viewer --serve` → 3D viewer |
 
 ## MCP
 
 ```bash
-vectors mcp     # run the stdio server; `bash ../../install.sh` wires it into editors
+vectors mcp     # run the stdio server; `bash ../../setup.sh` wires it into editors
 ```
 
 For a server with no stable cwd (Claude Desktop), pin a project:

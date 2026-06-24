@@ -1,8 +1,8 @@
 /**
- * `vectors daemon <install|uninstall|status|restart|logs|run>` — manage the
- * background sync daemon. install/uninstall delegate to the platform scripts
- * (launchd on macOS, systemd --user on Linux); `run` executes it in the
- * foreground; status/restart/logs wrap the platform service manager.
+ * `vectors daemon <start|stop|status|logs>` — manage the background sync daemon.
+ * `start`/`stop` delegate to the platform scripts (launchd on macOS, systemd
+ * --user on Linux); `status`/`logs` wrap the platform service manager. The
+ * hidden `run` executes the daemon in the foreground (used by the service).
  */
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -26,17 +26,17 @@ async function sh (cmd: string[]): Promise<number> {
 
 export const daemonCommands: Command[] = [
   {
-    path:    [ 'daemon', 'install' ],
-    summary: 'install the background daemon as a service (launchd/systemd)',
-    usage:   'vectors daemon install',
+    path:    [ 'daemon', 'start' ],
+    summary: 'install + start the background sync daemon (launchd/systemd)',
+    usage:   'vectors daemon start',
     async run (ctx) {
       await sh([ 'bash', join(DAEMON_DIR, 'install.sh'), ...ctx.argv ])
     },
   },
   {
-    path:    [ 'daemon', 'uninstall' ],
-    summary: 'remove the background daemon service',
-    usage:   'vectors daemon uninstall',
+    path:    [ 'daemon', 'stop' ],
+    summary: 'stop + remove the background daemon service',
+    usage:   'vectors daemon stop',
     async run (ctx) {
       await sh([ 'bash', join(DAEMON_DIR, 'uninstall.sh'), ...ctx.argv ])
     },
@@ -52,16 +52,6 @@ export const daemonCommands: Command[] = [
     },
   },
   {
-    path:    [ 'daemon', 'restart' ],
-    summary: 'restart the daemon service',
-    usage:   'vectors daemon restart',
-    async run () {
-      await (MAC
-        ? sh([ 'launchctl', 'kickstart', '-k', `gui/${UID}/${LABEL}` ])
-        : sh([ 'systemctl', '--user', 'restart', 'ukdb-daemon.service' ]))
-    },
-  },
-  {
     path:        [ 'daemon', 'logs' ],
     summary:     'follow the daemon output log',
     usage:       'vectors daemon logs',
@@ -72,7 +62,8 @@ export const daemonCommands: Command[] = [
   },
   {
     path:        [ 'daemon', 'run' ],
-    summary:     'run the daemon in the foreground (Ctrl-C to stop)',
+    hidden:      true,
+    summary:     'run the daemon in the foreground (used by the service)',
     usage:       'vectors daemon run',
     longRunning: true,
     async run () {
