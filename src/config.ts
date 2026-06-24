@@ -73,3 +73,6 @@ export const SOURCE_INTERVAL = Number(envAny([ 'VINDEX_SOURCE_INTERVAL', 'UKDB_S
 
 /** 3D viewer HTTP port. */
 export const VIEWER_PORT = Number(envAny([ 'VINDEX_VIEWER_PORT', 'PORT' ], '7341'))
+
+/** Streamable-HTTP MCP server port (used by `vectors mcp http`). */
+export const MCP_HTTP_PORT = Number(envAny([ 'VINDEX_MCP_HTTP_PORT', 'PORT' ], '8765'))

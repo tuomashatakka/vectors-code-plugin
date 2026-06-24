@@ -58,6 +58,7 @@
     "eslint": "^9.39.0"
   },
   "trustedDependencies": [
-    "protobufjs"
+    "protobufjs",
+    "sharp"
   ]
 }
