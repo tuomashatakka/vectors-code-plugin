@@ -30,7 +30,8 @@ if ! grep -q '^UKDB_DSN=' "$ENV_FILE"; then
 fi
 
 # The daemon is TypeScript on Bun; resolve an absolute bun path for launchd/systemd.
-ROOT="$(cd "$SKILL_DIR/.." && pwd)"
+# Repo root is two levels above the skill dir (skills/vector-index -> repo root).
+ROOT="$(cd "$SKILL_DIR/../.." && pwd)"
 BUN="$(command -v bun || true)"
 if [ -z "$BUN" ]; then
   echo "!! bun not found — install it (https://bun.sh) and re-run" >&2
@@ -65,8 +66,8 @@ Darwin)
 const [tmpl, out, bun, daemon, lo, le, envdict] = process.argv.slice(1)
 const fs = require("fs")
 let s = fs.readFileSync(tmpl, "utf8")
-s = s.replace("__PYTHON__", bun).replace("__DAEMON__", daemon)
-     .replace("__LOG_OUT__", lo).replace("__LOG_ERR__", le)
+s = s.replaceAll("__PYTHON__", bun).replaceAll("__DAEMON__", daemon)
+     .replaceAll("__LOG_OUT__", lo).replaceAll("__LOG_ERR__", le)
      .replace("        __ENV_DICT__\n", envdict)
 fs.writeFileSync(out, s)
 console.log(">> wrote " + out)
