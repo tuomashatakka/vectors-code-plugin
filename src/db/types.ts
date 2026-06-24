@@ -61,6 +61,7 @@ export interface EmbeddingSpace {
 
 /** A single produced chunk before it is persisted. */
 export interface ProducedChunk {
+  symbol?:   string | null;
   ordinal:   number;
   title:     string | null;
   text:      string;

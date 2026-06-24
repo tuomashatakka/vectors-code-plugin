@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vectors-plugin — local semantic RAG, indexed by project</title>
-<meta name="description" content="A global, local, project-partitioned semantic RAG store for your code and docs. Per-project and cross-project search, an MCP server, and a background sync daemon. Everything runs locally — no API keys.">
+<meta name="description" content="A global, local, project-partitioned semantic RAG store for your code and docs. AST-aware symbol-graph ingestion, per-project and cross-project search, an MCP server, and a background sync daemon. TypeScript on Bun + Postgres/pgvector. No API keys, no Python.">
 <style>
   :root {
     --bg: #ffffff;
@@ -122,10 +122,12 @@
     <div class="eyebrow">vectors-plugin</div>
     <h1>Local semantic search over your code &amp; docs, indexed by project.</h1>
     <p class="lede">
-      A global, on-disk RAG store partitioned by project. Point it at a repo or a
-      folder of notes; get reranked semantic search back — per project or across
-      all of them. Ships as a Claude Code / opencode / Claude Desktop plugin with
-      an MCP server. No API keys, no network at query time.
+      A global, on-disk RAG store partitioned by project, backed by Postgres +
+      pgvector. Point it at a repo or a folder of notes; get reranked hybrid
+      semantic search back — per project or across all of them. Ships as a Claude
+      Code / opencode / Claude Desktop / VS Code plugin with an MCP server.
+      TypeScript on Bun, no build step, no Python, no API keys, no network at
+      query time.
     </p>
     <div class="cta">
       <a class="btn primary" href="https://github.com/tuomashatakka/vectors-code-plugin">View on GitHub</a>
@@ -136,20 +138,20 @@
   <section>
     <h2>What it is</h2>
     <p>
-      One store on disk holds many <b>projects</b>; each is its own embedded,
-      cross-encoder-reranked index. The active project is <b>auto-resolved from
-      your working directory</b>, so an agent working inside a repo gets that
-      repo's retrieval automatically — and you can still search <b>globally</b>
-      across every project at once.
+      One PostgreSQL + pgvector database holds many <b>projects</b>; each is its
+      own embedded, cross-encoder-reranked index. The active project is
+      <b>auto-resolved from your working directory</b>, so an agent working
+      inside a repo gets that repo's retrieval automatically — and you can still
+      search <b>globally</b> across every project at once.
     </p>
-    <img src="flow.svg" alt="vector-index usage flow: create a project, add sources, ingest, then search per-project or globally — used from the CLI, MCP server, library, or 3D viewer" style="width:100%;height:auto;display:block;margin:20px 0 8px;">
-    <pre class="diagram">$VINDEX_HOME            one global RAG database
-  ├── scene/            a project — its own collection + config + root
+    <img src="flow.svg" alt="vector-index usage flow: create a project, add sources, ingest, then search per-project or globally — used from the CLI, MCP server, or 3D viewer" style="width:100%;height:auto;display:block;margin:20px 0 8px;">
+    <pre class="diagram">VINDEX_DSN              one PostgreSQL + pgvector database
+  ├── scene/            a project — documents + chunks + vectors + root
   ├── portfolio/
   └── rustbook/
 
-per-project   files → chunk → embed → store        (ingest, once)
-              query → embed → top-k → rerank        (search, fast, offline)
+per-project   files → chunk → embed → store              (ingest, incremental)
+              query → embed → dense+sparse → RRF → rerank (search, fast, offline)
 global        fan out across projects → merge → one rerank → tagged hits</pre>
   </section>
 
@@ -161,26 +163,26 @@ global        fan out across projects → merge → one rerank → tagged hits</
         <p>Resolution walks <code>$VINDEX_PROJECT</code> → nearest project root → a <code>.git</code>/<code>.vindex</code> marker → default. You rarely name the project.</p>
       </div>
       <div class="item">
-        <h3>Per-project &amp; global search</h3>
-        <p>Search one project, or fan out across all of them and rerank the union so results are comparable even across different embedding models.</p>
+        <h3>AST + symbol-graph ingestion</h3>
+        <p>Code is chunked by tree-sitter into one chunk per declaration (functions → <code>symbol</code>, types → <code>definition</code>), titled by symbol name. Imports become a queryable graph.</p>
       </div>
       <div class="item">
-        <h3>Fully local</h3>
-        <p>Embeddings (<code>all-MiniLM-L6-v2</code>) and the cross-encoder reranker run on-device. No API keys; no network when you query.</p>
+        <h3>Hybrid, reranked retrieval</h3>
+        <p>Dense (pgvector cosine) + sparse (Postgres FTS) fused with Reciprocal Rank Fusion, then cross-encoder reranked, with a confidence tier and citation grounding.</p>
       </div>
       <div class="item">
-        <h3>Any corpus</h3>
-        <p>Local dirs or git repos, filtered by globs, with markdown / code / text chunking chosen per file. Public URLs reconstructed for each hit.</p>
+        <h3>Fully local, no Python</h3>
+        <p>Embeddings (<code>all-MiniLM-L6-v2</code>) and the cross-encoder reranker run on-device as ONNX via Transformers.js. No API keys; no network when you query.</p>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>Four ways to use it</h2>
+    <h2>Ways to use it</h2>
     <dl class="facts">
-      <div><dt>CLI</dt><dd>Create projects, ingest, run one-off queries (project or global), list projects, serve the viewer — <code>vindex.py</code>.</dd></div>
-      <div><dt>MCP server</dt><dd>Live tools for Claude / agents: <code>search</code>, <code>search_global</code>, <code>current_project</code>, <code>ingest</code>, <code>create_project</code>, and more.</dd></div>
-      <div><dt>Library</dt><dd><code>import vector_index</code> — the <code>Project</code> class plus <code>global_search</code> and <code>resolve_project_name</code>.</dd></div>
+      <div><dt>CLI</dt><dd>Create projects, ingest, run one-off queries (project or global), list projects, serve the viewer, manage the daemon — <code>vectors</code> (alias <code>vindex</code>).</dd></div>
+      <div><dt>REPL</dt><dd><code>vectors repl</code> — a query-first shell; a bare line searches the current project, <code>:global Q</code> searches everything, <code>:project NAME</code> switches scope.</dd></div>
+      <div><dt>MCP server</dt><dd>13 live tools for Claude / agents: <code>search</code>, <code>search_global</code>, <code>current_project</code>, <code>ingest</code>, <code>create_project</code>, <code>validate_citations</code>, <code>recall_intents</code>, and more.</dd></div>
       <div><dt>3D viewer</dt><dd>A three.js “synapse” navigator that PCAs a project's embedding space and lets you explore it interactively.</dd></div>
     </dl>
   </section>
@@ -192,8 +194,8 @@ global        fan out across projects → merge → one rerank → tagged hits</
       dimensions and links nearest neighbours. Below is a live, procedural demo —
       <b>drag to orbit, scroll to zoom, type to search</b>. It runs entirely in the
       browser with no server. Your real index renders the same way; export a
-      standalone copy of it with <code>vindex export-viewer</code> and open the HTML
-      directly.
+      standalone copy of it with <code>vectors viewer export</code> and open the
+      HTML directly.
     </p>
     <div class="viewer-frame">
       <iframe src="viewer-demo.html" title="3D embedding viewer — live demo" loading="lazy"></iframe>
@@ -207,32 +209,48 @@ docker run -d --name vectors-pg -e POSTGRES_PASSWORD=x -e POSTGRES_DB=vectors \
   -p 5432:5432 pgvector/pgvector:pg16
 export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
 
-bun install &amp;&amp; bun run schema     # deps + apply the schema
-bash install.sh                    # wire every tool found
+bun install &amp;&amp; bun install -g     # deps + the global `vectors` CLI
+vectors setup                       # apply the schema + default embedding space
+bash install.sh                     # wire every editor / MCP found
 
 # index the project you're standing in
-bun src/cli.ts create scene --root .
-bun src/cli.ts add-source scene --id code --path . --glob '**/*.ts' --glob '**/*.md'
-bun src/cli.ts ingest scene
-bun src/cli.ts query "how does the flock pick ideas?" --project scene
+vectors project create scene --root .
+vectors project add-source scene --id code --path . --glob '**/*.ts' --glob '**/*.md'
+vectors project ingest scene
+vectors query "how does the flock pick ideas?" --project scene
 
 # ask across every project at once
-bun src/cli.ts search "welded indexed geometry deterministic seed"</code></pre>
+vectors search "welded indexed geometry deterministic seed"</code></pre>
+  </section>
+
+  <section>
+    <h2>AST + symbol-graph ingestion <span class="tag">headline</span></h2>
+    <p class="muted">
+      Code files aren't chopped into blind line windows. <b>tree-sitter</b> parses
+      each file and emits one chunk per named declaration — far better retrieval
+      granularity — while imports are persisted as graph edges.
+    </p>
+    <ul class="clean">
+      <li><b>One chunk per symbol</b> — functions/methods → <code>symbol</code> units; classes/interfaces/types/enums/consts → <code>definition</code> units, each titled by its symbol name (e.g. <code>src/geo.ts › seedMesh</code>).</li>
+      <li><b>An import graph</b> — each file's imports become <code>reference(kind='file')</code> rows + <code>mentions</code> link edges in the same store.</li>
+      <li><b>15+ languages</b> — ts, tsx, js, py, go, rust, java, c, cpp, ruby, php, c#, swift, kotlin, scala, lua. Pure JS/WASM (<code>web-tree-sitter</code> + <code>tree-sitter-wasms</code>).</li>
+      <li><b>Graceful fallback</b> — unsupported languages or parse failures fall back to the heading/line/char chunker.</li>
+    </ul>
   </section>
 
   <section>
     <h2>Unified knowledge database <span class="tag">design</span></h2>
     <p class="muted">
-      The repo includes a full design + DDL for consolidating everything into a
-      single local PostgreSQL&nbsp;+&nbsp;pgvector store, so vectors and memory live
-      side by side and cross-reference cleanly.
+      One local PostgreSQL&nbsp;+&nbsp;pgvector store consolidates everything, so
+      vectors and memory live side by side and cross-reference cleanly. Full DDL
+      ships in the repo; the complete spec is in <code>spec.md</code>.
     </p>
     <ul class="clean">
       <li><b>One store, four kinds of knowledge</b> — chunk vectors, chat history, external references (URLs, Drive, Notion), and your own document/codebase content.</li>
       <li><b>Multi-project, not isolated</b> — a project hierarchy plus sibling links; content is tagged by project yet still searchable globally.</li>
       <li><b>A 4-level memory ladder</b> — from verbatim content (L0) up to vague concepts (L3), derived by a local model and regenerated when the source changes — without ever mutating the originals.</li>
-      <li><b>Constantly-learning memory</b> — durable facts and preferences with confidence, reinforcement, and decay.</li>
-      <li><b>Token-saving retrieval</b> — serve high-level summaries first and drill to detail only on demand.</li>
+      <li><b>Constantly-learning memory</b> — durable facts and preferences with confidence, reinforcement, and computed salience decay.</li>
+      <li><b>Intent memory</b> — hooks learn which recurring asks resolved (or didn't) and inject prior resolutions before the next reply.</li>
     </ul>
   </section>
 
@@ -248,11 +266,12 @@ bun src/cli.ts search "welded indexed geometry deterministic seed"</code></pre>
       <li><b>Digest worker</b> — drains a job queue, embedding content and running local-Ollama summarization, fact, and reference extraction.</li>
       <li><b>Optional daily backup</b> — <code>pg_dump</code> pushed to OneDrive or Google Drive (local sync folder or <code>rclone</code>), an Obsidian vault, and/or a Notion manifest, with retention.</li>
     </ul>
+    <p class="muted" style="margin-top:16px">Manage it with <code>vectors daemon install | run | status | restart | logs | uninstall</code>.</p>
   </section>
 
   <footer>
     <p>
-      Everything runs locally — no API keys, no query-time network.
+      Everything runs locally — no API keys, no query-time network, no Python.
       <br>
       <a href="https://github.com/tuomashatakka/vectors-code-plugin">github.com/tuomashatakka/vectors-code-plugin</a>
       · MIT licensed

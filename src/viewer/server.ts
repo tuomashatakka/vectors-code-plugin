@@ -12,6 +12,7 @@
  * Built on node:http (runs under Bun). PCA via the ml-pca package.
  */
 import { createServer } from 'node:http'
+import { VIEWER_PORT } from '../config.ts'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -309,7 +310,7 @@ async function buildStatus (ctx: ProjectCtx): Promise<StatusResult> {
   }
 }
 
-const DEFAULT_PORT = Number(process.env.PORT) || 7341
+const DEFAULT_PORT = VIEWER_PORT
 
 /** Start the viewer HTTP server for `projectName`. Resolves once listening. */
 export async function runViewer (projectName: string, port: number = DEFAULT_PORT): Promise<void> {

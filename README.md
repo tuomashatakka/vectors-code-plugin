@@ -1,101 +1,48 @@
 # vectors-plugin
 
 A Claude Code / Codex / opencode / Claude Desktop / VS Code / Antigravity plugin
-that ships a **global, local,
-project-partitioned semantic RAG store** — the `vector-index` skill plus an MCP
-server exposing it as live tools.
+that ships a **global, local, project-partitioned semantic RAG store** — the
+`vector-index` skill plus an MCP server exposing it as live tools.
 
-One store on disk holds many **projects**; each is its own embedded +
-cross-encoder-reranked index. The active project is **auto-resolved from the
-working directory**, so an agent working inside a repo gets that repo's
-retrieval automatically. You can also search **globally** across every project
-at once. Everything runs locally: no API keys, no network at query time.
+One PostgreSQL + pgvector database holds many **projects**; each is its own
+embedded + cross-encoder-reranked index. The active project is **auto-resolved
+from the working directory**, so an agent working inside a repo gets that repo's
+retrieval automatically. You can also search **globally** across every project at
+once. Everything runs locally: **no API keys, no network at query time, no
+Python** — embeddings and reranking are pure JS/WASM (`@xenova/transformers`,
+ONNX), run directly on [Bun](https://bun.sh) with no build step.
 
 ```
-$VINDEX_HOME            one global RAG database
-  ├── scene/            a project (own collection + config + root)
+VINDEX_DSN              one PostgreSQL + pgvector database
+  ├── scene/            a project (own documents + chunks + vectors + root)
   ├── portfolio/
   └── rustbook/
 ```
 
-## How it works
-
-![vector-index usage flow](docs/flow.svg)
-
-Index a project once; then query it — per project, or globally across every
-project at once. Use it from the CLI, the MCP server, or the 3D viewer. An
-optional background daemon keeps everything re-ingested for you.
-
-Implemented in **TypeScript, run directly on [Bun](https://bun.sh)** (no build
-step), with embeddings from **Transformers.js** (`all-MiniLM-L6-v2`, 384-dim,
-fully local — no PyTorch) and storage in **PostgreSQL + pgvector**.
-
 It also **learns from the conversation**: Claude Code hooks record each user
 intent, how often similar asks recur, the assistant's response, and whether it
-resolved the intent — then inject prior known resolutions (and failures to avoid)
-into context before the next reply. The intent memory lives in the same Postgres
-store (`intent` / `intent_resolution`), recall is a fast model-free lexical lookup, and
-grading uses a local Ollama judge (with a transcript heuristic fallback). See
-**Intent memory** in the skill docs; toggle off with `VINDEX_INTENT_DISABLE=1`.
+resolved the intent — then inject prior known resolutions (and failures to
+avoid) into context before the next reply. Recall is a fast, model-free lexical
+lookup; grading uses a local Ollama judge with a transcript-heuristic fallback.
+Toggle off with `VINDEX_INTENT_DISABLE=1`.
 
-## What's inside
+> **Full specification:** [`spec.md`](spec.md) — exhaustive data model, retrieval
+> pipeline, daemon, MCP tools, CLI, and config.
 
-```
-vectors-plugin/
-├── .claude-plugin/plugin.json   plugin manifest
-├── .mcp.json                    bundled MCP server (bun src/mcp/server.ts)
-├── commands/vectors.md          /vectors slash command
-├── src/                         TypeScript engine: db, embed, chunk, search, cli, mcp, viewer, daemon
-├── hooks/                       UserPromptSubmit + Stop hooks (intent memory)
-├── references/                  unified-knowledge-db.sql + design docs
-└── skills/
-    └── vector-index/            SKILL.md + assets + references
-```
+## Headline feature: AST + symbol-graph ingestion
 
-## Install
-
-One command installs dependencies (bun), symlinks the skill, and registers the
-`vectors` MCP server into every supported harness/LLM application it finds:
-
-```bash
-bash install.sh                 # install + wire everything; asks about the daemon
-bash install.sh --no-daemon     # ...install + wire only, skip the background daemon
-bash install.sh --yes           # ...non-interactive, daemon included
-```
-
-It's idempotent — re-run any time. Reverse it with `bash uninstall.sh` (add
-`--deps` to also drop `node_modules`, `--daemon` to remove the background service).
-The Postgres store is always left intact.
-
-What it wires per tool (from the shared, data-driven environment registry in
-`scripts/environments.sh`):
-
-- **Claude Code** — skill → `~/.claude/skills/vector-index`, `/vectors` command →
-  `~/.claude/commands/`; MCP via the bundled `.mcp.json` (plugin installs) or
-  `claude mcp add` (user scope).
-- **Codex** — skill → `~/.codex/skills/vector-index` (or
-  `$CODEX_HOME/skills/vector-index`), `/vectors` command →
-  `~/.codex/commands/` (or `$CODEX_HOME/commands/`).
-- **opencode** — skill → `~/.config/opencode/skills/vector-index`, `/vectors`
-  command → `~/.config/opencode/command/`; MCP entry in
-  `~/.config/opencode/opencode.json`.
-- **Claude Desktop** — no skills dir, so just the MCP server in
-  `~/Library/Application Support/Claude/claude_desktop_config.json` (relies on
-  global search — it has no fixed working directory).
-- **VS Code** — no skills dir; MCP server registered in
-  `~/Library/Application Support/Code/User/mcp.json` (a `servers` entry with
-  `stdio` transport). Restart VS Code to pick it up.
-- **Antigravity** — skill → `~/.gemini/skills/vector-index`; MCP server written to
-  `~/.antigravity/mcp_config.json` and the `~/.gemini/{config,antigravity,antigravity-ide}/mcp_config.json`
-  variants (Antigravity's config path varies by version, so all are covered).
-
-MCP tools: `search`, `search_global`, `current_project`, `list_projects`,
-`project_status`, `ingest`, `reindex`, `create_project`, `add_source`,
-`validate_citations`, `resolve_reference`, `recall_intents`, `resolve_intent`.
+Code files are chunked by **tree-sitter** into **one chunk per named
+declaration** — functions/methods become `symbol` units, classes/interfaces/
+types/enums/consts become `definition` units — each titled by its symbol name
+(e.g. `src/geo.ts › seedMesh`). Imports are persisted as
+`reference(kind='file')` + `mentions` link edges, giving you an **import graph**
+in the same store. Supported: ts, tsx, js, py, go, rust, java, c, cpp, ruby, php,
+c#, swift, kotlin, scala, lua (via `web-tree-sitter` + `tree-sitter-wasms`, pure
+JS/WASM). Unsupported languages fall back to the line-window chunker.
 
 ## Requirements
 
-- [Bun](https://bun.sh) ≥ 1.2 (the runtime — runs the TypeScript directly)
+- [Bun](https://bun.sh) ≥ 1.2 (runs the TypeScript directly — no build step)
 - PostgreSQL 16 + [pgvector](https://github.com/pgvector/pgvector) ≥ 0.7
 
 Spin up a local database in one line:
@@ -106,39 +53,165 @@ docker run -d --name vectors-pg -e POSTGRES_PASSWORD=x -e POSTGRES_DB=vectors \
 export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
 ```
 
-## Scripts (bun)
-
-Drive everything through `bun run <script>` (the `package.json` scripts):
+## Install
 
 ```bash
-bun install                  # install dependencies
-bun run schema               # apply the unified-knowledge-db schema to $VINDEX_DSN
-bun run wire                 # wire every detected editor (install.sh); :all / :no-daemon variants
-bun run unwire               # reverse it (uninstall.sh)
-
-bun run projects             # list indexed projects (* = active)
-bun run ingest <project>     # (re)ingest a project's sources
-bun run search "<query>"     # global search across every project
-bun run query <project> "<q>"# search one project
-bun run serve <project>      # 3D viewer -> http://localhost:7341
-bun run export-viewer        # standalone demo viewer HTML (no server)
-
-bun run daemon               # run the background sync daemon in the foreground
-bun run daemon:install       # install it as a launchd/systemd service
-bun run lint                 # eslint (zero warnings enforced)
-bun run typecheck            # tsc --noEmit
-bun test                     # run the test suite
+bun install                     # install dependencies
+bun install -g                  # install the global `vectors` / `vindex` CLI
+# (or, from a clone: `bun link`, or `vectors setup --link`)
 ```
+
+`vectors setup` installs deps (if missing), applies the schema + migrations to
+`$VINDEX_DSN`, and ensures the default embedding space:
+
+```bash
+vectors setup                   # deps + schema + default space
+vectors setup --link            # ...also link the global `vectors` bin
+vectors setup --daemon          # ...also install the background daemon
+vectors doctor                  # verify Bun, DSN, Postgres, pgvector, schema, daemon
+```
+
+To wire editors / MCP across every detected harness, run the installer:
+
+```bash
+bash install.sh                 # wire Claude Code / Codex / opencode / Claude Desktop / VS Code / Antigravity; asks about the daemon
+bash install.sh --no-daemon     # wire only, skip the daemon
+bash install.sh --yes           # non-interactive, daemon included
+```
+
+It is idempotent; reverse it with `bash uninstall.sh` (`--deps` also drops
+`node_modules`, `--daemon` removes the service). The Postgres store is left
+intact.
 
 ## Usage
 
-See [`skills/vector-index/SKILL.md`](skills/vector-index/SKILL.md) and
-[`skills/vector-index/references/architecture.md`](skills/vector-index/references/architecture.md).
+The workflow is **setup → create / add-source / ingest → query / search →
+repl → daemon → editor/MCP → viewer**.
 
 ```bash
-export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
-bun src/cli.ts create scene --root ~/Documents/Projects/scene
-bun src/cli.ts add-source scene --id code --path ~/Documents/Projects/scene --glob '**/*.ts'
-bun src/cli.ts ingest scene
-bun src/cli.ts query "deterministic seeded geometry" --project scene
+# 1. create a project (root defaults to the cwd)
+vectors project create scene --root ~/Documents/Projects/scene
+
+# 2. attach a source and ingest it (incremental, diff-by-hash)
+vectors project add-source scene --id code --path ~/Documents/Projects/scene \
+  --glob '**/*.ts' --glob '**/*.md'
+vectors project ingest scene
+
+# 3. search ONE project (hybrid dense+lexical, reranked)
+vectors query "deterministic seeded geometry" --project scene
+# bare verbs work too:  vectors ingest scene   /   vectors create scene …
+
+# 4. search ACROSS every project (or a subset), merged + reranked
+vectors search "welded indexed geometry deterministic seed"
+vectors search "RRF fusion" --projects scene,rustbook --json
+
+# 5. housekeeping
+vectors projects                # all projects + doc/chunk counts (* = active)
+vectors here                    # which project does this dir resolve to?
+vectors status scene            # config + stats
+
+# 6. interactive shell (a bare line searches the current project)
+vectors repl                    # :project NAME · :global Q · :help · :quit
 ```
+
+`--no-rerank` gives raw fused order (faster, skips the cross-encoder); `--json`
+emits machine-readable output. The project is auto-resolved from the cwd when
+omitted.
+
+### Background daemon
+
+Keeps the store current: a **chat feeder** (mirrors Claude transcripts into
+`session`/`message`), a **source feeder** (re-ingests changed files), and a
+**digest worker** (embeds new content; optional local-Ollama summaries / fact
+extraction). Install as a service (launchd on macOS, systemd `--user` on Linux):
+
+```bash
+vectors daemon install          # install as a service
+vectors daemon run              # ...or run in the foreground (Ctrl-C to stop)
+vectors daemon status | restart | logs | uninstall
+```
+
+### Editors / MCP
+
+`bash install.sh` wires the bundled `vectors` MCP server into every harness it
+finds (skill + `/vectors` command + MCP entry). MCP tools:
+
+`search`, `search_global`, `current_project`, `list_projects`, `project_status`,
+`ingest`, `reindex`, `create_project`, `add_source`, `validate_citations`,
+`resolve_reference`, `recall_intents`, `resolve_intent`.
+
+Run the server standalone with `vectors mcp` (the bundled `.mcp.json` points
+plugin installs at `bun ${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts`).
+
+### 3D viewer
+
+```bash
+vectors serve scene             # synapse navigator → http://localhost:7341
+vectors viewer export scene.html  # standalone demo HTML (no backend)
+```
+
+A three.js "synapse" navigator that PCAs the project's embedding space to 3D and
+links nearest neighbours; type to search, drag to orbit.
+
+## Environment variables
+
+`VINDEX_*` is canonical; legacy `UKDB_*` names are accepted as deprecated
+aliases.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VINDEX_DSN` (alias `UKDB_DSN`) | `postgres://localhost:5432/vectors` | Postgres DSN. |
+| `VINDEX_HOME` | `~/.local/share/vector-index` | Config + cache home (vectors live in Postgres). |
+| `VINDEX_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model (384-d). |
+| `VINDEX_RERANK_MODEL` | `cross-encoder/ms-marco-MiniLM-L6-v2` | Cross-encoder reranker. |
+| `VINDEX_PROJECT` | (unset) | Pin the active project (wins over cwd resolution). |
+| `VINDEX_DEFAULT` | `default` | Fallback project name. |
+| `VINDEX_READONLY` | off | Block all mutating operations. |
+| `VINDEX_ALLOW_ROOTS` | (none) | `:`-separated roots allowed for ingest/create. |
+| `VINDEX_INTENT_DISABLE` | off | Disable the intent-memory hooks. |
+| `VINDEX_INTENT_NO_JUDGE` | off | Skip the Ollama judge (heuristic grading only). |
+| `VINDEX_INTENT_MIN_SCORE` | `0.45` | Recall inject threshold. |
+| `VINDEX_INTENT_MAX_TOKENS` | `400` | Injection token budget. |
+| `VINDEX_OLLAMA_URL` (alias `OLLAMA_URL`) | `http://127.0.0.1:11434` | Local Ollama (judge / digest). |
+| `VINDEX_OLLAMA_MODEL` | `llama3.1:8b` | Ollama model. |
+| `VINDEX_CHAT_GLOBS` (alias `UKDB_CHAT_GLOBS`) | `~/.claude/projects/**/*.jsonl` | Transcript globs (daemon chat feeder). |
+| `VINDEX_CHAT_INTERVAL` / `VINDEX_SOURCE_INTERVAL` | `5` / `300` (s) | Feeder cadences. |
+| `VINDEX_VIEWER_PORT` (alias `PORT`) | `7341` | 3D viewer port. |
+
+## Architecture
+
+```
+src/
+  cli/          command registry + dispatch (vectors / vindex)
+  db/           pool, schema/migrations, project registry + cwd resolution, ingest
+  chunk/        chunker (md/code/text), ast.ts (tree-sitter symbol chunks + import graph), units
+  embed/        embedder (mean-pool + L2-norm) + cross-encoder rerank — pure JS/WASM (ONNX)
+  search/       hybrid dense+sparse RRF + rerank + confidence; grounding, references, assemble, orchestration
+  intents/      Postgres-backed intent memory (record/recall/resolve/grade)
+  daemon/       supervisor + chat/source feeders + digest worker
+  mcp/          stdio MCP server (13 tools)
+  viewer/       3D synapse viewer HTTP + JSON API (PCA)
+hooks/          UserPromptSubmit + Stop hooks (intent memory)
+references/     unified-knowledge-db.sql (full DDL) + design docs
+skills/vector-index/   SKILL.md, daemon tooling, viewer asset, reference docs
+```
+
+Pipeline: **per-project** `files → chunk → embed → store` (ingest, incremental
+diff-by-hash), then `query → embed → dense+sparse → RRF → cross-encoder rerank`
+(offline). **Global** search fans out across projects, merges, and applies one
+rerank so hits are comparable even across embedding models.
+
+## Scripts
+
+```bash
+bun run typecheck     # tsc --noEmit
+bun run lint          # eslint (zero warnings enforced)
+bun test              # bun test
+bun run wire          # bash install.sh
+bun run unwire        # bash uninstall.sh
+bun run demo-viewer   # regenerate docs/viewer-demo.html
+```
+
+See [`spec.md`](spec.md) for the complete specification and
+[`skills/vector-index/SKILL.md`](skills/vector-index/SKILL.md) for the skill
+docs. MIT licensed.

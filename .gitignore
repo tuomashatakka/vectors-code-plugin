@@ -18,3 +18,7 @@ node_modules/
 
 # local daemon config (contains UKDB_DSN) — never commit
 skills/vector-index/daemon/ukdb-daemon.env
+
+# local env (DSN etc.) — never commit
+.env
+.env.local

@@ -1,87 +1,85 @@
-# ukdb-daemon — background sync for the Unified Knowledge Database
+# vectors daemon — background sync for the unified knowledge database
 
 A single long-lived process that keeps the PostgreSQL + pgvector store (see
 [`../references/unified-knowledge-db-spec.md`](../references/unified-knowledge-db-spec.md))
 continuously up to date, plus launchd/systemd tooling to run it as a background
 service. It is the moving part behind the spec's "automatic background digesting"
-and "constantly learning memory" features.
+and "constantly learning memory" features. Implemented in TypeScript and run on
+Bun (`src/daemon/daemon.ts`) — **no Python**.
 
 ## What it does
 
-Concerns handled in one event loop (the first three keep the DB current; the
-fourth, optional, mirrors it off-machine):
+Three subsystems run concurrently in one process (`runDaemon`), all against the
+shared store:
 
-1. **Chat feeder** — watches chat-transcript files (Claude Code / Claude Desktop
-   JSONL by default, `UKDB_CHAT_GLOBS`) and upserts new `session` / `message`
-   rows. New rows fire the DB trigger that enqueues an `embed` job, so fresh chat
-   context becomes searchable on its own.
-2. **Source feeder** — re-reads each project's existing
-   `$VINDEX_HOME/<project>/config.json` and mirrors changed files (content-hash
-   diffed) into `document` / `chunk`. This bridges your current vector-index
-   store into the unified DB without re-declaring sources.
-3. **Job worker** — drains the `digest_job` queue: `embed` (sentence-transformers,
-   no network), and the haiku-level LLM tasks against a **local Ollama** —
-   `extract_references`, `extract_facts`, and `summarize` (builds derived L1/L2
-   `memory_node`s + `derivation` edges). It claims jobs with
-   `FOR UPDATE SKIP LOCKED` (safe to run several), wakes on `LISTEN/NOTIFY`, and
-   polls as the safety net.
-
-4. **Backup (optional)** — once a day, `pg_dump`s the DB and pushes it to a
-   remote provider (OneDrive / Google Drive via `folder` or `rclone`, an Obsidian
-   vault, and/or a Notion manifest). See *Optional remote backup* below.
+1. **Chat feeder** (`src/daemon/feeders/chat.ts`) — watches chat-transcript files
+   (Claude Code / Claude Desktop JSONL by default, `VINDEX_CHAT_GLOBS`) and
+   upserts new `session` / `message` rows past a per-file watermark in
+   `daemon_state`. New rows fire the DB trigger that enqueues an `embed` job, so
+   fresh chat context becomes searchable on its own.
+2. **Source feeder** (`src/daemon/feeders/source.ts`) — periodically re-ingests
+   every project's configured sources via `ingestProject`, which diffs by
+   whole-file content hash and skips unchanged files. Changed chunks auto-enqueue
+   `embed` jobs via the trigger.
+3. **Digest worker** (`src/daemon/worker.ts`) — drains the `digest_job` queue:
+   `embed` (Transformers.js / ONNX, no network) and the haiku-level tasks
+   (`summarize`, `extract_*`) against a **local Ollama**. It claims jobs with
+   `FOR UPDATE SKIP LOCKED` (safe to run several), wakes on `LISTEN/NOTIFY`
+   (channel `digest`), and polls every 2s as the safety net. On error it requeues
+   until `max_attempts`, then marks the job `dead`.
 
 The searchable path (ingest → embed → search) never needs Ollama; only the
-derived abstraction tasks do. `cluster_topics`, `extract_concepts`, `dedupe`, and
-`rebuild_abstraction` are recognized and acknowledged-as-skipped for now (a later
-iteration implements them) so the queue stays clean.
+derived abstraction tasks do.
 
 ## Prerequisites
 
-- The schema applied: `psql "$UKDB_DSN" -f ../references/unified-knowledge-db.sql`
-  against a PostgreSQL 16 with **pgvector** installed.
-- The plugin venv built: `bash ../setup.sh` (the installer adds `psycopg` to it).
+- The schema applied: `vectors setup` (or `vectors daemon run` applies it on
+  startup) against a PostgreSQL 16 with **pgvector**.
+- Bun ≥ 1.2 on `PATH`.
 - A local **Ollama** running (`ollama serve`) with the model in
-  `UKDB_OLLAMA_MODEL` pulled — only needed for summaries/fact extraction.
+  `VINDEX_OLLAMA_MODEL` / `UKDB_OLLAMA_MODEL` pulled — only for summaries / fact
+  extraction.
 
-## Install (macOS — launchd)
+## Manage it with the CLI
 
-The top-level `bash ../setup.sh` offers to install this daemon at the end (answer
-`Y`, or pass `-y` to auto-accept). You still need `ukdb-daemon.env` configured
-first. To install it directly:
+```bash
+vectors daemon install      # install as a service (launchd on macOS, systemd --user on Linux)
+vectors daemon status       # service status
+vectors daemon restart      # restart the service
+vectors daemon logs         # follow the output log
+vectors daemon uninstall    # stop + remove the service
+vectors daemon run          # run in the foreground (Ctrl-C to stop) — applies the schema first
+```
+
+`vectors setup --daemon` installs it as part of setup; `bash ../../install.sh`
+offers to install it at the end of editor wiring.
+
+## Install directly (env-baked service)
 
 ```bash
 cd skills/vector-index/daemon
-cp ukdb-daemon.env.example ukdb-daemon.env   # then edit: set UKDB_DSN at least
+cp ukdb-daemon.env.example ukdb-daemon.env   # then edit: set VINDEX_DSN at least
 bash install.sh
 ```
 
-This writes `~/Library/LaunchAgents/com.vectors.ukdb.plist` (env baked in from
-your `ukdb-daemon.env`), then bootstraps + kickstarts it. It runs at login and is
-kept alive. Logs go to `~/Library/Logs/ukdb-daemon.{out,err}.log`.
+This writes the platform service with the env baked in from your
+`ukdb-daemon.env`, bootstraps and starts it. **macOS (launchd):**
+`~/Library/LaunchAgents/com.vectors.ukdb.plist`, runs at login, kept alive, logs
+to `~/Library/Logs/ukdb-daemon.{out,err}.log`. **Linux (systemd --user):** a
+`--user` unit `ukdb-daemon.service` (`loginctl enable-linger "$USER"` to keep it
+running while logged out). Re-run `bash install.sh` after editing the env to
+apply changes; reverse with `bash uninstall.sh`.
 
 ```bash
-launchctl print gui/$(id -u)/com.vectors.ukdb | head   # status
+launchctl print gui/$(id -u)/com.vectors.ukdb | head   # macOS status
 tail -f ~/Library/Logs/ukdb-daemon.out.log             # watch it work
-bash uninstall.sh                                       # stop + remove
-```
-
-Re-run `bash install.sh` after editing `ukdb-daemon.env` to apply changes.
-
-## Install (Linux — systemd --user)
-
-The same `install.sh` detects Linux and writes a `--user` unit instead:
-
-```bash
-bash install.sh
-systemctl --user status ukdb-daemon.service
-loginctl enable-linger "$USER"     # keep running while logged out (optional)
 ```
 
 ## Run in the foreground (debug)
 
 ```bash
-set -a; . ukdb-daemon.env; set +a
-../.venv/bin/python ukdb_daemon.py
+vectors daemon run
+# or directly:  bun src/daemon/daemon.ts
 ```
 
 ## Optional remote backup (≈ once a day)
@@ -89,43 +87,42 @@ set -a; . ukdb-daemon.env; set +a
 When `UKDB_BACKUP_PROVIDER` is set, the daemon runs `pg_dump -Fc` of the whole DB
 and pushes it to one or more providers, self-throttled to `UKDB_BACKUP_INTERVAL`
 (default 24h) and tracked in `daemon_state` so restarts don't double-back-up.
-Providers are comma-separated; pick by how you want the bytes stored:
+Providers are comma-separated:
 
 | Provider | Storage | Config |
 | --- | --- | --- |
 | `folder` | copy to any local dir — **point it at a OneDrive / Google Drive local sync folder** to reach those clouds with no API setup | `UKDB_BACKUP_DIR` |
 | `rclone` | true cloud upload via a configured `rclone` remote (OneDrive, Google Drive, …) | `UKDB_RCLONE_REMOTE` (e.g. `onedrive:backups/ukdb`) |
-| `obsidian` | copy into a vault subfolder + maintain `UKDB Backups.md`; mirror via Obsidian Sync / iCloud | `UKDB_OBSIDIAN_VAULT` |
-| `notion` | a backup **manifest** page (timestamp/size/checksum/location) — the dump bytes go to a byte-storing provider above, Notion is the catalog | `UKDB_NOTION_TOKEN`, `UKDB_NOTION_PARENT` (a page id) |
+| `obsidian` | copy into a vault subfolder + maintain an index note; mirror via Obsidian Sync / iCloud | `UKDB_OBSIDIAN_VAULT` |
+| `notion` | a backup **manifest** page (timestamp/size/checksum/location); the dump bytes go to a byte-storing provider above, Notion is the catalog | `UKDB_NOTION_TOKEN`, `UKDB_NOTION_PARENT` (a page id) |
 
 `UKDB_BACKUP_RETENTION` (default 7) keeps the newest N dumps for
-folder/obsidian/rclone. **OneDrive and Google Drive** are reached either via
-`folder` (their desktop apps expose a local synced directory, the simplest path)
-or via `rclone` (no local sync needed). Requires `pg_dump` on `PATH` (or set
-`UKDB_PG_DUMP`).
-
-Test your provider config without waiting a day:
-
-```bash
-set -a; . ukdb-daemon.env; set +a
-../.venv/bin/python ukdb_daemon.py --backup-now    # one backup, prints results, exits
-```
+folder/obsidian/rclone. Requires `pg_dump` on `PATH` (or set `UKDB_PG_DUMP`).
 
 ## Configuration
 
 All via environment — see [`ukdb-daemon.env.example`](ukdb-daemon.env.example).
-`UKDB_DSN` is required; everything else has sane defaults. Notable knobs:
-`UKDB_OLLAMA_MODEL`, `UKDB_CHAT_GLOBS`, `UKDB_FEEDER_INTERVAL` (chat+source scan
-cadence), `UKDB_POLL_INTERVAL` (queue poll), and `UKDB_DISABLE_FEEDERS=1` to run a
-worker-only node.
+`VINDEX_*` is canonical; the legacy `UKDB_*` names are still accepted as aliases.
+`VINDEX_DSN` (alias `UKDB_DSN`) is required; everything else has sane defaults.
+Notable knobs:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VINDEX_DSN` / `UKDB_DSN` | `postgres://localhost:5432/vectors` | Postgres DSN. |
+| `VINDEX_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model. |
+| `VINDEX_OLLAMA_URL` / `UKDB_OLLAMA_URL` | `http://127.0.0.1:11434` | Local Ollama. |
+| `VINDEX_OLLAMA_MODEL` / `UKDB_OLLAMA_MODEL` | `llama3.1:8b` | Ollama model. |
+| `VINDEX_CHAT_GLOBS` / `UKDB_CHAT_GLOBS` | `~/.claude/projects/**/*.jsonl` | Transcript globs. |
+| `VINDEX_CHAT_INTERVAL` / `UKDB_CHAT_INTERVAL` | `5` (s) | Chat feeder cadence. |
+| `VINDEX_SOURCE_INTERVAL` / `UKDB_SOURCE_INTERVAL` | `300` (s) | Source feeder cadence. |
 
 ## Notes & limits
 
 - The chat parser is tolerant of transcript shape (string or typed-array
-  `content`, `message.role` or top-level `type`); point `UKDB_CHAT_GLOBS` at any
-  JSONL conversation logs. Chat `message.project_id` is left NULL unless you wire
-  a mapping — global search still finds them.
-- Per-message offsets and source scan watermarks live in the `daemon_state`
-  table, so restarts resume without re-ingesting.
+  `content`); point `VINDEX_CHAT_GLOBS` at any JSONL conversation logs. Chat
+  `message.project_id` is left NULL unless you wire a mapping — global search
+  still finds them.
+- Per-message offsets and source-scan watermarks live in `daemon_state`, so
+  restarts resume without re-ingesting.
 - The embedding space (`embedding_space` row + `emb_<model>_<dim>` table + HNSW
   index) is created on first run if absent.

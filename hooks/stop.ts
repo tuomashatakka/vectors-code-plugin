@@ -14,7 +14,7 @@ import { INTENT_DISABLED } from '../src/config.ts'
 
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const CLI  = join(HERE, '..', 'src', 'cli.ts')
+const CLI  = join(HERE, '..', 'src', 'cli', 'index.ts')
 
 async function readStdin (): Promise<Record<string, unknown>> {
   try {

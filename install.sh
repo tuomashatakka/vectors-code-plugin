@@ -30,8 +30,10 @@ note(){ printf '   %s\n' "$*"; }
 command -v bun >/dev/null 2>&1 || { echo "!! bun is required — install it: https://bun.sh" >&2; exit 1; }
 
 # 1) deps + schema -----------------------------------------------------------
+# The real setup logic lives in `vectors setup` (src/cli/index.ts); this wires
+# editors below. Plain `setup` does NOT wire, so there is no recursion.
 say "installing dependencies + applying schema"
-bash "$SKILL_SRC/setup.sh" --no-daemon
+bun "$ROOT/src/cli/index.ts" setup --no-daemon
 
 # idempotent skill symlink into a tool's skills dir
 link_skill(){ mkdir -p "$1"; ln -sfn "$SKILL_SRC" "$1/vector-index"; touched+=("skill  -> $1/vector-index"); }
@@ -111,8 +113,8 @@ fi
 say "done"
 if [ ${#touched[@]} -eq 0 ]; then
   note "no supported tools detected (Claude Code / Codex / opencode / Claude Desktop)."
-  note "deps are installed — use the CLI directly: bun $ROOT/src/cli.ts --help"
+  note "deps are installed — use the CLI: bun $ROOT/src/cli/index.ts --help  (or 'vectors' after: bun link)"
 else
   for t in "${touched[@]}"; do note "$t"; done
 fi
-note "verify:  bun $ROOT/src/cli.ts projects"
+note "verify:  bun $ROOT/src/cli/index.ts doctor"
