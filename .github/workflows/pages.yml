@@ -38,7 +38,7 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Regenerate the demo viewer from the canonical viewer
-        run: bun run demo-viewer docs/viewer-demo.html
+        run: bun run demo-viewer --demo docs/viewer-demo.html
 
       - name: Upload static site (docs/)
         uses: actions/upload-pages-artifact@v3
