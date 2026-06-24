@@ -1,0 +1,33 @@
+name: Publish to GitHub Packages
+
+# Publishes the `@tuomashatakka/vectors-plugin` npm package (with the `vectors`
+# bin) to GitHub Packages. Triggers when a GitHub Release is published, or
+# manually. The package version published is whatever is in package.json — bump
+# it before cutting a release, otherwise the registry rejects a duplicate.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node (GitHub Packages registry)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: '@tuomashatakka'
+
+      - name: Publish
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

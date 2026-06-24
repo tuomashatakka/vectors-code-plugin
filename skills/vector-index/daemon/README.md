@@ -80,23 +80,6 @@ vectors daemon run
 # or directly:  bun src/daemon/daemon.ts
 ```
 
-## Optional remote backup (≈ once a day)
-
-When `UKDB_BACKUP_PROVIDER` is set, the daemon runs `pg_dump -Fc` of the whole DB
-and pushes it to one or more providers, self-throttled to `UKDB_BACKUP_INTERVAL`
-(default 24h) and tracked in `daemon_state` so restarts don't double-back-up.
-Providers are comma-separated:
-
-| Provider | Storage | Config |
-| --- | --- | --- |
-| `folder` | copy to any local dir — **point it at a OneDrive / Google Drive local sync folder** to reach those clouds with no API setup | `UKDB_BACKUP_DIR` |
-| `rclone` | true cloud upload via a configured `rclone` remote (OneDrive, Google Drive, …) | `UKDB_RCLONE_REMOTE` (e.g. `onedrive:backups/ukdb`) |
-| `obsidian` | copy into a vault subfolder + maintain an index note; mirror via Obsidian Sync / iCloud | `UKDB_OBSIDIAN_VAULT` |
-| `notion` | a backup **manifest** page (timestamp/size/checksum/location); the dump bytes go to a byte-storing provider above, Notion is the catalog | `UKDB_NOTION_TOKEN`, `UKDB_NOTION_PARENT` (a page id) |
-
-`UKDB_BACKUP_RETENTION` (default 7) keeps the newest N dumps for
-folder/obsidian/rclone. Requires `pg_dump` on `PATH` (or set `UKDB_PG_DUMP`).
-
 ## Configuration
 
 All via environment — see [`ukdb-daemon.env.example`](ukdb-daemon.env.example).

@@ -5,6 +5,7 @@
 #   • dependencies + schema, and the global `vectors` CLI on your PATH
 #   • the background sync daemon (launchd/systemd)
 #   • the MCP server + skill wired into every detected tool (Claude Code/Desktop, …)
+#   • the intent-memory hooks (UserPromptSubmit + Stop) wired into Claude Code
 #
 #   bash setup.sh                 full install (prompts before the daemon)
 #   bash setup.sh -y, --yes       non-interactive (install the daemon too)
@@ -29,6 +30,8 @@ ROOT="$(pwd)"
 SKILL_SRC="$ROOT/skills/vector-index"
 MCP_CMD="bun"
 MCP_ARG="$ROOT/src/mcp/server.ts"
+HOOK_UPS="$ROOT/hooks/user_prompt_submit.ts"
+HOOK_STOP="$ROOT/hooks/stop.ts"
 OS="$(uname -s)"
 DB_NAME="vectors"
 DSN="${VINDEX_DSN:-postgres://localhost:5432/$DB_NAME}"
@@ -77,6 +80,44 @@ if (cfg[key] && typeof cfg[key] === "object" && cfg[key].vectors !== undefined) 
 ' "$1" "$2"
 }
 
+# Intent-memory hooks (Claude Code only — UserPromptSubmit + Stop are CC events).
+# Idempotent: keyed on the hook filename, so re-running never duplicates entries.
+merge_claude_hooks(){ # $1=settings.json path
+  node -e '
+const [path, cmdUps, cmdStop] = process.argv.slice(1)
+const fs = require("fs"), p = require("path")
+let cfg = {}
+try { if (fs.existsSync(path) && fs.statSync(path).size) cfg = JSON.parse(fs.readFileSync(path, "utf8")) } catch {}
+const hooks = cfg.hooks ?? (cfg.hooks = {})
+const ensure = (event, file, cmd) => {
+  const arr = Array.isArray(hooks[event]) ? hooks[event] : (hooks[event] = [])
+  const present = arr.some(g => Array.isArray(g.hooks) && g.hooks.some(h => typeof h.command === "string" && h.command.includes(file)))
+  if (!present) arr.push({ hooks: [{ type: "command", command: cmd }] })
+}
+ensure("UserPromptSubmit", "hooks/user_prompt_submit.ts", "bun \"" + cmdUps + "\"")
+ensure("Stop", "hooks/stop.ts", "bun \"" + cmdStop + "\"")
+fs.mkdirSync(p.dirname(path), { recursive: true })
+fs.writeFileSync(path, JSON.stringify(cfg, null, 2))
+' "$1" "$HOOK_UPS" "$HOOK_STOP"
+}
+del_claude_hooks(){ # $1=settings.json path
+  [ -f "$1" ] || return 0
+  node -e '
+const [path] = process.argv.slice(1)
+const fs = require("fs")
+let cfg; try { cfg = JSON.parse(fs.readFileSync(path, "utf8")) } catch { process.exit(0) }
+if (!cfg.hooks) process.exit(0)
+for (const event of ["UserPromptSubmit", "Stop"]) {
+  if (!Array.isArray(cfg.hooks[event])) continue
+  cfg.hooks[event] = cfg.hooks[event].filter(g => !(Array.isArray(g.hooks) && g.hooks.some(h => typeof h.command === "string" && (h.command.includes("hooks/user_prompt_submit.ts") || h.command.includes("hooks/stop.ts")))))
+  if (cfg.hooks[event].length === 0) delete cfg.hooks[event]
+}
+if (Object.keys(cfg.hooks).length === 0) delete cfg.hooks
+fs.writeFileSync(path, JSON.stringify(cfg, null, 2))
+console.log("   removed vectors hooks from " + path)
+' "$1"
+}
+
 bind_environment(){
   local id="$1" label="$2" skill_dir="$3" command_dir="$4" mcp_kind="$5" mcp_path="$6" mcp_topkey="$7" mcp_flavor="$8"
   say "$label"
@@ -99,6 +140,11 @@ bind_environment(){
       touched+=("mcp    -> $mcp_path"); note "registered MCP 'vectors'" ;;
     none) ;;
   esac
+  # Intent-memory hooks: Claude Code only (its settings.json lives beside skills/).
+  if [ "$id" = "claude_code" ]; then
+    merge_claude_hooks "$HOME/.claude/settings.json"
+    touched+=("hooks  -> $HOME/.claude/settings.json"); note "wired intent-memory hooks"
+  fi
 }
 unbind_environment(){
   local id="$1" label="$2" skill_dir="$3" command_dir="$4" mcp_kind="$5" mcp_path="$6" mcp_topkey="$7" mcp_flavor="$8"
@@ -109,6 +155,7 @@ unbind_environment(){
     json) del_json_mcp "$mcp_path" "$mcp_topkey" ;;
     none) ;;
   esac
+  [ "$id" = "claude_code" ] && del_claude_hooks "$HOME/.claude/settings.json"
 }
 
 # ---------------------------------------------------------------------------

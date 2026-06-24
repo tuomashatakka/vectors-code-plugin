@@ -540,11 +540,14 @@ summarize/cluster.
 
 **Service management** (`vectors daemon …` / `skills/vector-index/daemon/`):
 launchd on macOS (`com.vectors.ukdb`, logs `~/Library/Logs/ukdb-daemon.*.log`),
-systemd `--user` on Linux (`ukdb-daemon.service`). **Optional backup providers**
-(`UKDB_BACKUP_PROVIDER`, ~daily `pg_dump -Fc`): `folder` (local dir / OneDrive /
-Google Drive sync folder), `rclone` (cloud remote), `obsidian` (vault +
-manifest note), `notion` (manifest page). Retention `UKDB_BACKUP_RETENTION`
-(default 7).
+systemd `--user` on Linux (`ukdb-daemon.service`).
+
+> **Roadmap (not implemented).** Opt-in daemon backup providers
+> (`VINDEX_BACKUP_PROVIDER`, ~daily `pg_dump -Fc`): `folder` (local dir / OneDrive
+> / Google Drive sync folder), `rclone` (cloud remote), `obsidian` (vault +
+> manifest note), `notion` (manifest page), retention `VINDEX_BACKUP_RETENTION`.
+> See the README Roadmap section. Until then, back up manually with
+> `pg_dump`/`pg_restore`.
 
 ---
 

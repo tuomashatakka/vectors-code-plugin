@@ -1,13 +1,13 @@
-# Unified Knowledge Database — design spec
+# Unified Knowledge Database — spec
 
 A single, local PostgreSQL database that unifies — and lets you cross-reference —
 everything the agent knows:
 
-1. **Vector data** — chunk embeddings, replacing the per-project zvec collections
-   with [pgvector](https://github.com/pgvector/pgvector).
-2. **Chat memory / history** — sessions and messages (new; does not exist today).
+1. **Vector data** — chunk embeddings in
+   [pgvector](https://github.com/pgvector/pgvector), partitioned by project.
+2. **Chat memory / history** — sessions and messages.
 3. **External references** — URLs, Google Drive files, Notion pages, GitHub
-   links, citations mentioned in any context (new).
+   links, citations mentioned in any context.
 4. **Own content** — the full text of your documents and project codebases, plus
    their chunks.
 
@@ -17,24 +17,20 @@ On top of that it adds a four-level **memory abstraction** ladder, a background
 
 The companion file [`unified-knowledge-db.sql`](unified-knowledge-db.sql) is the
 authoritative, copy-pasteable DDL. This document explains *why* each piece is
-shaped the way it is. It is a design deliverable: no application code is wired up
-yet.
+shaped the way it is. **It is implemented** — the live engine (`src/`, TypeScript
+on Bun) runs on exactly this schema; the repo-root
+[`spec.md`](../../../spec.md) is the authoritative spec of the shipped system,
+and [`architecture.md`](architecture.md) maps the modules.
 
-## How this relates to today's engine
+## The engine
 
-Today (`scripts/vector_index.py`, `references/architecture.md`) the store is one
-zvec HNSW collection **per project** under `$VINDEX_HOME`, with per-chunk records
-(`source_id`, `source`, `title`, `chunk`, `url`, `text`, `embedding`). Embeddings
-come from `sentence-transformers` (default `all-MiniLM-L6-v2`, 384-dim) and hits
-are reranked by a cross-encoder. The architecture doc already frames the store as
-swappable through four `Index` touchpoints (`_schema` / `open` / `ingest` /
-`search`).
-
-This spec keeps the **app layer unchanged** — sentence-transformers still
-embeds, the cross-encoder still reranks — and replaces only the store with
-Postgres + pgvector. Ollama is introduced **solely** for autonomous,
-"haiku-level"-trusted digest tasks (summaries, concept extraction, clustering,
-fact/reference extraction, dedupe), never on the query hot path.
+The store is **one PostgreSQL + pgvector database** holding many projects (chunk
+embeddings live in per-space `emb_<model>_<dim>` tables, not per-project files).
+Embeddings come from `@xenova/transformers` (ONNX, default `all-MiniLM-L6-v2`,
+384-dim) and hits are reranked by a cross-encoder — both **pure JS/WASM, no
+Python**. Ollama is used **solely** for autonomous, "haiku-level"-trusted digest
+tasks (summaries, concept extraction, clustering, fact/reference extraction,
+dedupe), never on the query hot path.
 
 ## Conventions
 
@@ -80,8 +76,8 @@ with identical text share one vector row.
 
 ## 1. Multi-project structure (feature 1)
 
-`project` carries what `IndexConfig` carries today (`name`, `root_path`,
-`embed_model`, `rerank_model`, chunk config) plus a `space_id` and a
+`project` carries the per-project config (`name`, `root_path`, `embed_model`,
+`rerank_model`, chunk config, and `sources` jsonb) plus a `space_id` and a
 self-referential **`parent_id`** for a parent/child hierarchy (walk it with a
 recursive CTE).
 
@@ -278,17 +274,18 @@ done → enqueue `extract_*` → `summarize` → parent `cluster_topics`, each w
 ### The background daemon (macOS-first)
 
 The worker and the two feeders that keep the store current are implemented as a
-single long-lived process, [`daemon/ukdb_daemon.py`](../daemon/ukdb_daemon.py),
-with launchd/systemd install tooling in [`daemon/`](../daemon/README.md):
+single long-lived process, [`src/daemon/daemon.ts`](../../../src/daemon/daemon.ts)
+(TypeScript on Bun), with launchd/systemd install tooling in
+[`daemon/`](../daemon/README.md):
 
 - **Chat feeder** — watches chat-transcript files (Claude Code / Desktop JSONL by
   default) and upserts new `session` / `message` rows; each insert fires the
   enqueue trigger, so new chat context becomes searchable automatically.
-- **Source feeder** — mirrors changed files from each existing
-  `$VINDEX_HOME/<project>/config.json` into `document` / `chunk`, content-hash
-  diffed, reusing the plugin's proven chunking (`vector_index.chunk_file`).
-- **Job worker** — the queue consumer above: `embed` on sentence-transformers
-  (no network) plus the Ollama digest tasks.
+- **Source feeder** — re-ingests each project's configured `sources` (the jsonb
+  array on the `project` row) into `document` / `chunk`, content-hash diffed,
+  reusing the engine's chunking (`src/db/ingest.ts`).
+- **Job worker** — the queue consumer above: `embed` via `@xenova/transformers`
+  (ONNX, no network) plus the Ollama digest tasks.
 
 On macOS `daemon/install.sh` writes a launchd LaunchAgent
 (`com.vectors.ukdb`, `RunAtLoad` + `KeepAlive`) with env baked in from
@@ -327,7 +324,7 @@ is a `pg_dump` file and the providers are thin adapters.
 The point of the ladder is to **spend the fewest tokens that still answer**. The
 assembler walks it **top-down**:
 
-1. **Embed the query** (app, sentence-transformers) into the project's space.
+1. **Embed the query** (`@xenova/transformers`, ONNX) into the project's space.
 2. **Coarse pass:** ANN over `memory_node` filtered to `level IN ('L3','L2')`
    (plus the project filter, or none for global). These nodes are few and small.
 3. **Progressive drill:** for the best coarse nodes, follow `derivation` edges
@@ -351,7 +348,12 @@ context, and drill only on demand.
 
 ---
 
-## 10. Migration from zvec, and the four touchpoints
+## 10. Migration from zvec, and the four touchpoints (historical)
+
+> **Historical.** The migration described below is complete: the engine now runs
+> natively on Postgres + pgvector (TypeScript on Bun, `@xenova/transformers`).
+> This section is retained as a record of how the store was swapped from the
+> former Python/zvec engine.
 
 ### Data migration (per project, idempotent)
 

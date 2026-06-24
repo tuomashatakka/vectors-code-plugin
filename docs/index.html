@@ -88,6 +88,24 @@
 
   .diagram { color: var(--muted); white-space: pre; font-size: 0.8rem; line-height: 1.5; }
 
+  /* Architecture diagrams: focusable, and grow on hover/focus. */
+  .diagram-img {
+    width: 100%; height: auto; display: block;
+    margin: 20px 0 8px;
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); cursor: zoom-in; outline: none;
+    transition: transform .35s cubic-bezier(.2,.7,.2,1), box-shadow .35s ease, border-color .35s ease;
+    transform-origin: center;
+  }
+  .diagram-img:hover, .diagram-img:focus-visible {
+    transform: scale(1.12);
+    box-shadow: 0 12px 44px rgba(0,0,0,0.22);
+    border-color: var(--accent);
+    position: relative; z-index: 2;
+  }
+  .diagram-img:focus-visible { outline: 2px solid var(--accent); outline-offset: 6px; }
+  @media (prefers-reduced-motion: reduce) { .diagram-img { transition: none; } }
+
   dl.facts { margin: 0; }
   dl.facts > div { padding: 14px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 160px 1fr; gap: 20px; }
   dl.facts > div:first-child { border-top: none; }
@@ -144,7 +162,7 @@
       inside a repo gets that repo's retrieval automatically — and you can still
       search <b>globally</b> across every project at once.
     </p>
-    <img src="flow.svg" alt="vector-index usage flow: create a project, add sources, ingest, then search per-project or globally — used from the CLI, MCP server, or 3D viewer" style="width:100%;height:auto;display:block;margin:20px 0 8px;">
+    <img src="flow.svg" class="diagram-img" tabindex="0" alt="vector-index usage flow: create a project, add sources, ingest, then search per-project or globally — used from the CLI, MCP server, or 3D viewer">
     <pre class="diagram">VINDEX_DSN              one PostgreSQL + pgvector database
   ├── scene/            a project — documents + chunks + vectors + root
   ├── portfolio/
@@ -224,6 +242,38 @@ vectors</code></pre>
   </section>
 
   <section>
+    <h2>Install from GitHub Packages <span class="tag">npm</span></h2>
+    <p class="muted">
+      Published to GitHub Packages as <code>@tuomashatakka/vectors-plugin</code>,
+      shipping the <code>vectors</code> CLI bin and the MCP server. It runs
+      directly on <a href="https://bun.sh">Bun</a> (no build step), so you need
+      Bun on your <code>PATH</code> plus a PostgreSQL&nbsp;16 + pgvector database.
+    </p>
+    <pre><code># 1. point the @tuomashatakka scope at GitHub Packages + authenticate
+#    (a GitHub token with the read:packages scope)
+echo "@tuomashatakka:registry=https://npm.pkg.github.com" >> ~/.npmrc
+echo "//npm.pkg.github.com/:_authToken=GH_TOKEN"           >> ~/.npmrc
+
+# 2. install globally — exposes the `vectors` bin + MCP server
+npm i -g @tuomashatakka/vectors-plugin
+
+# 3. point at Postgres, apply the schema, verify
+export VINDEX_DSN=postgres://localhost:5432/vectors
+vectors setup            # schema + default embedding space
+vectors doctor           # Bun · DSN · Postgres · pgvector · schema
+
+# index a repo, then search it — or run the MCP server for your agent
+cd ~/Projects/myrepo &amp;&amp; vectors index myrepo
+vectors search "where is the retrieval pipeline?"
+vectors mcp              # stdio MCP server for Claude / opencode / …</code></pre>
+    <p class="muted">
+      Want one-command provisioning (Bun + Postgres + pgvector) <em>and</em> the
+      skill, slash command, MCP and intent-memory hooks wired into every detected
+      editor? Clone the repo and run <code>bash setup.sh</code> instead.
+    </p>
+  </section>
+
+  <section>
     <h2>AST + symbol-graph ingestion <span class="tag">headline</span></h2>
     <p class="muted">
       Code files aren't chopped into blind line windows. <b>tree-sitter</b> parses
@@ -245,7 +295,7 @@ vectors</code></pre>
       vectors and memory live side by side and cross-reference cleanly. Full DDL
       ships in the repo; the complete spec is in <code>spec.md</code>.
     </p>
-    <img src="schema.svg" alt="Entity-relationship diagram: embedding_space hub and physical emb_* tables; project with documents/chunks, sessions/messages, the memory_node L0–L3 ladder and facts; global references; polymorphic link edges; the digest_job queue; and intent memory." style="width:100%;height:auto;display:block;margin:18px 0 8px;">
+    <img src="schema.svg" class="diagram-img" tabindex="0" alt="Entity-relationship diagram: embedding_space hub and physical emb_* tables; project with documents/chunks, sessions/messages, the memory_node L0–L3 ladder and facts; global references; polymorphic link edges; the digest_job queue; and intent memory.">
     <ul class="clean">
       <li><b>One store, four kinds of knowledge</b> — chunk vectors, chat history, external references (URLs, Drive, Notion), and your own document/codebase content.</li>
       <li><b>Multi-project, not isolated</b> — a project hierarchy plus sibling links; content is tagged by project yet still searchable globally.</li>
@@ -256,16 +306,15 @@ vectors</code></pre>
   </section>
 
   <section>
-    <h2>Background daemon &amp; backup <span class="tag">in repo</span></h2>
+    <h2>Background daemon <span class="tag">in repo</span></h2>
     <p class="muted">
       A single long-lived process (launchd on macOS, systemd on Linux) keeps the
-      database current and recoverable, with no manual steps.
+      database current, with no manual steps.
     </p>
     <ul class="clean">
       <li><b>Chat feeder</b> — watches transcript files and ingests new conversation context automatically.</li>
       <li><b>Source feeder</b> — mirrors changed project files into the store, content-hash diffed.</li>
       <li><b>Digest worker</b> — drains a job queue, embedding content and running local-Ollama summarization, fact, and reference extraction.</li>
-      <li><b>Optional daily backup</b> — <code>pg_dump</code> pushed to OneDrive or Google Drive (local sync folder or <code>rclone</code>), an Obsidian vault, and/or a Notion manifest, with retention.</li>
     </ul>
     <p class="muted" style="margin-top:16px">Manage it with <code>vectors daemon start | stop | status | logs</code>.</p>
   </section>

@@ -212,6 +212,18 @@ bun run unwire        # bash setup.sh --uninstall
 bun run demo-viewer   # regenerate docs/viewer-demo.html (procedural demo)
 ```
 
+## Roadmap
+
+Planned, not yet implemented:
+
+- **Daemon remote backup** — an opt-in `pg_dump -Fc` of the whole store on a
+  cadence (`VINDEX_BACKUP_PROVIDER`, ~daily), pushed to one or more providers:
+  a local **folder** (point it at a OneDrive / Google Drive sync folder for
+  zero-API cloud backup), an **rclone** remote, an **Obsidian** vault, and/or a
+  **Notion** manifest page — with retention. The store is a single Postgres DB
+  today, so `pg_dump`/`pg_restore` already work manually; this would automate it
+  inside the background daemon.
+
 See [`spec.md`](spec.md) for the complete specification and
 [`skills/vector-index/SKILL.md`](skills/vector-index/SKILL.md) for the skill
 docs. MIT licensed.

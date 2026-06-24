@@ -31,9 +31,10 @@ and carries clause-level metadata.
 `definition`, `symbol`, `reference`, `summary` — each independently embeddable,
 searchable, and filterable by `unit_type` + structured metadata. Flat chunking is
 the degenerate single-type case.
-**Plugin:** today one flat chunk record. The unified-db `memory_node`/`link`
-model already supports typed nodes; the *engine* could grow a `unit_type` tag and
-type-filtered search (`search(query, kinds=["symbol"])`).
+**Plugin:** **shipped.** `src/chunk/units.ts` (`classifyUnit`) tags every chunk
+with a `unit_type` (`section`/`symbol`/`definition`/`code`/`text`) at ingest, and
+search can filter by type. AST ingestion (`src/chunk/ast.ts`) emits `symbol` /
+`definition` units per declaration plus `reference`/`mentions` import edges.
 
 ### C2 · Structure-aware, context-enriched chunking
 **Seen as:** B chunks at `§` boundaries and **prepends the section number, title,
@@ -44,9 +45,9 @@ AST structure.
 **prepend each chunk's hierarchical context** (document title + heading/symbol
 path, optionally a short doc summary) to the *embedded* text while storing the raw
 text for display. Cheap, model-agnostic, and a large precision win.
-**Plugin:** our `chunk_file` already splits markdown by heading and code by line
-window — the missing piece is the **context prefix**. This is the smallest,
-highest-leverage engine change available.
+**Plugin:** **shipped.** `src/chunk/chunker.ts` splits markdown by heading and
+code by AST/line window, and ingest embeds a **context prefix** (title + path +
+chunk) while storing the raw chunk for display.
 
 ### C3 · Hybrid retrieval: dense + sparse, fused, then re-ranked
 **Seen as:** A fans out across several vector indexes and merges by similarity;
@@ -57,10 +58,10 @@ exact tokens ("228/1929, 36 §") and sparse alone misses paraphrase.
 lexical** index (exact tokens, identifiers, citations) in parallel, **fuse with
 RRF**, optionally weight by query shape, then **cross-encoder re-rank** the union.
 Exact-match recall and semantic recall stop being a trade-off.
-**Plugin:** we have dense + cross-encoder but **no lexical leg** — so identifier,
-error-code, and citation lookups underperform. Adding a per-project BM25 index and
-RRF fusion is the single biggest retrieval-quality enhancement, and fully
-domain-agnostic.
+**Plugin:** **shipped.** `src/search/search.ts` runs **dense** (pgvector) +
+**sparse** (Postgres full-text `tsvector`/`ts_rank`) in parallel, fuses with
+**RRF**, then cross-encoder re-ranks the union; each hit carries `dense`/`lexical`
+signals. (The lexical leg is Postgres FTS, not a BM25 sidecar.)
 
 ### C4 · Layered retrieval orchestration & tenancy
 **Seen as:** B's isolation patterns — **Silo** (a collection per tenant), **Pool**
@@ -156,24 +157,24 @@ prompt templates that any agent pairs with the retrieval tools.
 
 ## Mapping to the plugin
 
-| Capability | Status today | Where it lands |
+| Capability | Status | Where it lands |
 | --- | --- | --- |
-| C1 typed units | **shipped** | `units.py`; `unit_type` + `kinds` filter in search |
-| C2 context-prefix chunking | **shipped** | `hybrid.context_prefix` in `ingest` |
-| C3 hybrid dense+sparse + RRF | **shipped** | `hybrid.py` (BM25+RRF) in `Index.search` |
-| C4 layered/Bridge orchestration | **shipped** | `orchestration.py`; `global_search(shared=…)` |
-| C5 provenance & grounding | **shipped** (signals + verifier) | `grounding.py`; result `signals` |
-| C6 confidence tiers | **shipped** | `grounding.confidence_tier` |
-| C7 token-budget assembly | **shipped** | `assemble.py`; `max_tokens` search arg |
-| C8 reference resolve/validate | **shipped** (tools + citation engine) | `references.py`; MCP tools |
-| C9 capability guards | **shipped** | `guards.py`; `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS` |
-| C10 incremental ingestion | **shipped** (daemon feeders) | — |
-| C11 prompt scaffolds | **shipped** | `prompts.py`; MCP Prompts + `vindex prompt` |
+| C1 typed units | **shipped** | `src/chunk/units.ts`; `unit_type` + `kinds` filter in search |
+| C2 context-prefix chunking | **shipped** | context prefix in `src/db/ingest.ts` / `src/chunk/chunker.ts` |
+| C3 hybrid dense+sparse + RRF | **shipped** | `src/search/search.ts` (pgvector + Postgres FTS + RRF) |
+| C4 layered/Bridge orchestration | **shipped** | `src/search/orchestration.ts`; global-search layers |
+| C5 provenance & grounding | **shipped** | `src/search/grounding.ts`; result `signals` |
+| C6 confidence tiers | **shipped** | `confidenceTier` in `src/search/grounding.ts` |
+| C7 token-budget assembly | **shipped** | `src/search/assemble.ts`; `--max-tokens` |
+| C8 reference resolve/validate | **shipped** | `src/search/references.ts`; `validate_citations` / `resolve_reference` MCP tools |
+| C9 capability guards | **shipped** | `src/guards.ts`; `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS` |
+| C10 incremental ingestion | **shipped** | diff-by-hash `src/db/ingest.ts` + daemon feeders |
+| C11 prompt scaffolds | **shipped** | `src/prompts.ts`; `vectors prompt` |
 
-> All eleven capabilities are now implemented as stdlib-only sidecar modules
-> (`hybrid`, `grounding`, `orchestration`, `references`, `units`, `assemble`,
-> `guards`, `prompts`) wired into the engine, CLI, and MCP server — keeping the
-> heavy model stack isolated and every capability independently unit-tested.
+> All eleven capabilities are implemented in the TypeScript engine (`src/`),
+> wired into the CLI and the 13-tool MCP server. The store is PostgreSQL +
+> pgvector; the sparse retrieval leg is Postgres full-text search (not a BM25
+> sidecar), and embeddings/reranking are pure JS/WASM via `@xenova/transformers`.
 
 ## Recommended build order
 

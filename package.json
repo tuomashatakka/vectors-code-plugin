@@ -1,12 +1,29 @@
 {
-  "name": "vectors-plugin",
+  "name": "@tuomashatakka/vectors-plugin",
   "version": "0.2.0",
-  "private": true,
   "type": "module",
   "description": "Global, local, project-partitioned semantic RAG: a vector-index skill plus an MCP server with per-project and cross-project (global) search. TypeScript on Bun, backed by Postgres + pgvector.",
   "homepage": "https://github.com/tuomashatakka/vectors-code-plugin",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tuomashatakka/vectors-code-plugin.git"
+  },
   "license": "MIT",
   "packageManager": "bun@1.3.14",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "files": [
+    "src",
+    "hooks",
+    "assets",
+    "commands",
+    "scripts",
+    "references",
+    "setup.sh",
+    "spec.md",
+    ".mcp.json"
+  ],
   "engines": {
     "node": ">=24",
     "bun": ">=1.2"
