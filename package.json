@@ -1,0 +1,62 @@
+{
+  "name": "vectors-plugin",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Global, local, project-partitioned semantic RAG: a vector-index skill plus an MCP server with per-project and cross-project (global) search. TypeScript on Bun, backed by Postgres + pgvector.",
+  "homepage": "https://github.com/tuomashatakka/vectors-code-plugin",
+  "license": "MIT",
+  "packageManager": "bun@1.3.14",
+  "engines": {
+    "node": ">=24",
+    "bun": ">=1.2"
+  },
+  "bin": {
+    "vindex": "src/cli.ts"
+  },
+  "scripts": {
+    "setup": "bash skills/vector-index/setup.sh",
+    "wire": "bash install.sh",
+    "wire:all": "bash install.sh --yes",
+    "wire:no-daemon": "bash install.sh --no-daemon",
+    "unwire": "bash uninstall.sh",
+    "daemon:install": "bash skills/vector-index/daemon/install.sh",
+    "daemon:uninstall": "bash skills/vector-index/daemon/uninstall.sh",
+    "daemon:restart": "launchctl kickstart -k gui/$(id -u)/com.vectors.ukdb",
+    "daemon:status": "launchctl print gui/$(id -u)/com.vectors.ukdb 2>/dev/null | head -30",
+    "daemon:logs": "tail -n 50 -f \"$HOME/Library/Logs/ukdb-daemon.out.log\"",
+    "vindex": "bun src/cli.ts",
+    "projects": "bun src/cli.ts projects",
+    "ingest": "bun src/cli.ts ingest",
+    "reindex": "bun src/cli.ts reindex",
+    "search": "bun src/cli.ts search",
+    "query": "bun src/cli.ts query",
+    "status": "bun src/cli.ts status",
+    "serve": "bun src/cli.ts serve",
+    "export-viewer": "bun src/cli.ts export-viewer",
+    "demo-viewer": "bun src/viewer/make_demo.ts",
+    "mcp": "bun src/mcp/server.ts",
+    "daemon": "bun src/daemon/daemon.ts",
+    "schema": "bun src/db/schema.ts",
+    "lint": "eslint src hooks eslint.config.mjs",
+    "lint:fix": "eslint src hooks eslint.config.mjs --fix",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@xenova/transformers": "^2.17.2",
+    "ml-pca": "^4.1.1",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@tuomashatakka/eslint-config": "^3.2.2",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.11.10",
+    "bun-types": "^1.3.14",
+    "eslint": "^9.39.0"
+  },
+  "trustedDependencies": [
+    "protobufjs"
+  ]
+}

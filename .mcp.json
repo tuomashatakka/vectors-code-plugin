@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "vectors": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/skills/vector-index/.venv/bin/python",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/skills/vector-index/scripts/mcp_server.py"]
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts"]
     }
   }
 }

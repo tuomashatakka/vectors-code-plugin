@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # vectors-plugin — one-command install across Claude Code, opencode & Claude Desktop.
-# Builds the skill venv, symlinks the skill into each tool found, and registers the
-# bundled MCP server ("vectors"). Idempotent: safe to re-run. Reverse: bash uninstall.sh
+# Installs deps (bun), symlinks the skill into each tool found, and registers the
+# bundled MCP server ("vectors", TypeScript on Bun). Idempotent. Reverse: bash uninstall.sh
 #
-#   bash install.sh                 build venv + wire every tool found; ask about the daemon
+#   bash install.sh                 install deps + wire every tool found; ask about the daemon
 #   bash install.sh -y, --yes       also install the background daemon (non-interactive)
 #   bash install.sh -n, --no-daemon build + wire only; never touch the daemon
 #   bash install.sh -h, --help      show this help
@@ -20,17 +20,18 @@ esac; done
 cd "$(dirname "$0")"
 ROOT="$(pwd)"
 SKILL_SRC="$ROOT/skills/vector-index"
-PYBIN="$SKILL_SRC/.venv/bin/python"
-MCP_PY="$SKILL_SRC/scripts/mcp_server.py"
+MCP_CMD="bun"
+MCP_ARG="$ROOT/src/mcp/server.ts"
 touched=()
 
 say(){ printf '\n>> %s\n' "$*"; }
 note(){ printf '   %s\n' "$*"; }
 
-# 1) venv + deps -------------------------------------------------------------
-say "building the skill venv"
+command -v bun >/dev/null 2>&1 || { echo "!! bun is required — install it: https://bun.sh" >&2; exit 1; }
+
+# 1) deps + schema -----------------------------------------------------------
+say "installing dependencies + applying schema"
 bash "$SKILL_SRC/setup.sh" --no-daemon
-[ -x "$PYBIN" ] || { echo "!! venv build failed: $PYBIN missing" >&2; exit 1; }
 
 # idempotent skill symlink into a tool's skills dir
 link_skill(){ mkdir -p "$1"; ln -sfn "$SKILL_SRC" "$1/vector-index"; touched+=("skill  -> $1/vector-index"); }
@@ -38,22 +39,19 @@ link_skill(){ mkdir -p "$1"; ln -sfn "$SKILL_SRC" "$1/vector-index"; touched+=("
 link_cmd(){ mkdir -p "$1"; ln -sfn "$ROOT/commands/vectors.md" "$1/vectors.md"; touched+=("cmd    -> $1/vectors.md"); }
 
 # add/update the "vectors" MCP entry in a JSON config, preserving everything else
-merge_json_mcp(){ # $1=config path  $2=top key (mcpServers|mcp)  $3=flavor (claude|opencode)
-  "$PYBIN" - "$1" "$2" "$3" "$PYBIN" "$MCP_PY" <<'PY'
-import json, os, sys
-path, topkey, flavor, py, mcp = sys.argv[1:6]
-cfg = {}
-if os.path.exists(path) and os.path.getsize(path):
-    try: cfg = json.load(open(path))
-    except Exception: cfg = {}
-servers = cfg.setdefault(topkey, {})
-if flavor == "opencode":
-    servers["vectors"] = {"type": "local", "command": [py, mcp], "enabled": True}
-else:  # claude desktop
-    servers["vectors"] = {"command": py, "args": [mcp]}
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w") as f: json.dump(cfg, f, indent=2)
-PY
+merge_json_mcp(){ # $1=config path  $2=top key (mcpServers|mcp)  $3=flavor (claude|opencode|vscode)
+  node -e '
+const [path, topkey, flavor, cmd, arg] = process.argv.slice(1)
+const fs = require("fs"), p = require("path")
+let cfg = {}
+try { if (fs.existsSync(path) && fs.statSync(path).size) cfg = JSON.parse(fs.readFileSync(path, "utf8")) } catch {}
+const s = cfg[topkey] ?? (cfg[topkey] = {})
+if (flavor === "opencode") s.vectors = { type: "local", command: [cmd, arg], enabled: true }
+else if (flavor === "vscode") s.vectors = { type: "stdio", command: cmd, args: [arg] }
+else s.vectors = { command: cmd, args: [arg] }
+fs.mkdirSync(p.dirname(path), { recursive: true })
+fs.writeFileSync(path, JSON.stringify(cfg, null, 2))
+' "$1" "$2" "$3" "$MCP_CMD" "$MCP_ARG"
 }
 
 # 2) harness / LLM application bindings --------------------------------------
@@ -73,14 +71,14 @@ bind_environment(){
     claude_cli)
       if command -v claude >/dev/null 2>&1; then
         claude mcp remove vectors -s user >/dev/null 2>&1 || true
-        if claude mcp add vectors -s user -- "$PYBIN" "$MCP_PY" >/dev/null 2>&1; then
+        if claude mcp add vectors -s user -- "$MCP_CMD" "$MCP_ARG" >/dev/null 2>&1; then
           touched+=("mcp    -> claude code (user scope)"); note "registered MCP 'vectors'"
         else
           note "couldn't auto-register MCP — installed as a plugin, the bundled .mcp.json handles it"
         fi
       else
         note "claude CLI not found; as a plugin the bundled .mcp.json registers it, or run:"
-        note "  claude mcp add vectors -- $PYBIN $MCP_PY"
+        note "  claude mcp add vectors -- $MCP_CMD $MCP_ARG"
       fi
       ;;
     json)
@@ -113,8 +111,8 @@ fi
 say "done"
 if [ ${#touched[@]} -eq 0 ]; then
   note "no supported tools detected (Claude Code / Codex / opencode / Claude Desktop)."
-  note "the venv is built — use the CLI directly: $PYBIN $SKILL_SRC/scripts/vindex.py --help"
+  note "deps are installed — use the CLI directly: bun $ROOT/src/cli.ts --help"
 else
   for t in "${touched[@]}"; do note "$t"; done
 fi
-note "verify:  $PYBIN $SKILL_SRC/scripts/vindex.py projects"
+note "verify:  bun $ROOT/src/cli.ts projects"

@@ -202,18 +202,22 @@ global        fan out across projects → merge → one rerank → tagged hits</
 
   <section>
     <h2>Quickstart</h2>
-    <pre><code>bash install.sh                       # build the venv + wire every tool found
-PY=skills/vector-index/.venv/bin/python
-VINDEX=skills/vector-index/scripts/vindex.py
+    <pre><code># Postgres + pgvector (one-line local DB)
+docker run -d --name vectors-pg -e POSTGRES_PASSWORD=x -e POSTGRES_DB=vectors \
+  -p 5432:5432 pgvector/pgvector:pg16
+export VINDEX_DSN=postgres://postgres:x@localhost:5432/vectors
 
-# index the project you're standing in (root defaults to --source)
-$PY $VINDEX create scene --source . --strategy code \
-    --glob '**/*.ts' --glob '**/*.md'
-$PY $VINDEX ingest
-$PY $VINDEX query "how does the flock pick ideas?"
+bun install &amp;&amp; bun run schema     # deps + apply the schema
+bash install.sh                    # wire every tool found
+
+# index the project you're standing in
+bun src/cli.ts create scene --root .
+bun src/cli.ts add-source scene --id code --path . --glob '**/*.ts' --glob '**/*.md'
+bun src/cli.ts ingest scene
+bun src/cli.ts query "how does the flock pick ideas?" --project scene
 
 # ask across every project at once
-$PY $VINDEX search "welded indexed geometry deterministic seed"</code></pre>
+bun src/cli.ts search "welded indexed geometry deterministic seed"</code></pre>
   </section>
 
   <section>

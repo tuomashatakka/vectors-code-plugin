@@ -29,23 +29,15 @@ if ! grep -q '^UKDB_DSN=' "$ENV_FILE"; then
   exit 1
 fi
 
-# Use the plugin venv if present; ensure the daemon's runtime deps are there.
-PYTHON="$SKILL_DIR/.venv/bin/python"
-if [ ! -x "$PYTHON" ]; then
-  echo "!! plugin venv not found at $PYTHON — run 'bash $SKILL_DIR/setup.sh' first" >&2
+# The daemon is TypeScript on Bun; resolve an absolute bun path for launchd/systemd.
+ROOT="$(cd "$SKILL_DIR/.." && pwd)"
+BUN="$(command -v bun || true)"
+if [ -z "$BUN" ]; then
+  echo "!! bun not found — install it (https://bun.sh) and re-run" >&2
   exit 1
 fi
-echo ">> ensuring daemon deps (psycopg) in the venv"
-# uv-created venvs ship without pip, so prefer `uv pip` when uv is available.
-if command -v uv >/dev/null 2>&1; then
-  uv pip install --python "$PYTHON" --quiet "psycopg[binary]>=3.1" || {
-    echo "!! failed to install psycopg into the venv" >&2; exit 1; }
-else
-  "$SKILL_DIR/.venv/bin/pip" install --quiet "psycopg[binary]>=3.1" || {
-    echo "!! failed to install psycopg into the venv" >&2; exit 1; }
-fi
 
-DAEMON_PY="$DAEMON_DIR/ukdb_daemon.py"
+DAEMON_TS="$ROOT/src/daemon/daemon.ts"
 mkdir -p "$LOG_DIR"
 LOG_OUT="$LOG_DIR/ukdb-daemon.out.log"
 LOG_ERR="$LOG_DIR/ukdb-daemon.err.log"
@@ -69,17 +61,17 @@ Darwin)
     ENV_DICT+="        <key>$key</key><string>$val</string>"$'\n'
   done < <(read_env_pairs)
 
-  python3 - "$DAEMON_DIR/com.vectors.ukdb.plist.template" "$PLIST" \
-    "$PYTHON" "$DAEMON_PY" "$LOG_OUT" "$LOG_ERR" "$ENV_DICT" <<'PY'
-import sys
-tmpl, out, py, daemon, lo, le, envdict = sys.argv[1:8]
-s = open(tmpl).read()
-s = (s.replace("__PYTHON__", py).replace("__DAEMON__", daemon)
-       .replace("__LOG_OUT__", lo).replace("__LOG_ERR__", le)
-       .replace("        __ENV_DICT__\n", envdict))
-open(out, "w").write(s)
-print(f">> wrote {out}")
-PY
+  node -e '
+const [tmpl, out, bun, daemon, lo, le, envdict] = process.argv.slice(1)
+const fs = require("fs")
+let s = fs.readFileSync(tmpl, "utf8")
+s = s.replace("__PYTHON__", bun).replace("__DAEMON__", daemon)
+     .replace("__LOG_OUT__", lo).replace("__LOG_ERR__", le)
+     .replace("        __ENV_DICT__\n", envdict)
+fs.writeFileSync(out, s)
+console.log(">> wrote " + out)
+' "$DAEMON_DIR/com.vectors.ukdb.plist.template" "$PLIST" \
+    "$BUN" "$DAEMON_TS" "$LOG_OUT" "$LOG_ERR" "$ENV_DICT"
 
   UID_NUM="$(id -u)"
   echo ">> (re)loading launchd agent $LABEL"
@@ -109,7 +101,7 @@ Linux)
     echo "[Service]"
     echo "Type=simple"
     echo "EnvironmentFile=$ENV_FILE"
-    echo "ExecStart=$PYTHON $DAEMON_PY"
+    echo "ExecStart=$BUN $DAEMON_TS"
     echo "Restart=always"
     echo "RestartSec=10"
     echo "StandardOutput=append:$LOG_OUT"
@@ -128,7 +120,7 @@ Linux)
 
 *)
   echo "!! unsupported OS: $(uname -s). Run the daemon manually:" >&2
-  echo "   set -a; . $ENV_FILE; set +a; $PYTHON $DAEMON_PY" >&2
+  echo "   set -a; . $ENV_FILE; set +a; $BUN $DAEMON_TS" >&2
   exit 1
   ;;
 esac
