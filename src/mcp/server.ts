@@ -133,16 +133,28 @@ async function dispatch (name: string, a: ToolArgs) {
   }
 }
 
-const server = new Server({ name: 'vectors', version: '0.2.0' }, { capabilities: { tools: {}}})
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
-server.setRequestHandler(CallToolRequestSchema, async req => {
-  try {
-    return await dispatch(req.params.name, (req.params.arguments ?? {}) as ToolArgs)
-  }
-  catch (err) {
-    return { content: [{ type: 'text', text: `error: ${err instanceof Error ? err.message : String(err)}` }], isError: true }
-  }
-})
+/**
+ * Build a fully-configured MCP Server (tool list + handlers). Transport-agnostic
+ * so both the stdio entry point (below) and the streamable-HTTP entry point
+ * (`./http.ts`) can bind their own transport to a fresh instance.
+ */
+export function createMcpServer (): Server {
+  const server = new Server({ name: 'vectors', version: '0.2.0' }, { capabilities: { tools: {}}})
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
+  server.setRequestHandler(CallToolRequestSchema, async req => {
+    try {
+      return await dispatch(req.params.name, (req.params.arguments ?? {}) as ToolArgs)
+    }
+    catch (err) {
+      return { content: [{ type: 'text', text: `error: ${err instanceof Error ? err.message : String(err)}` }], isError: true }
+    }
+  })
+  return server
+}
 
-await server.connect(new StdioServerTransport())
-console.error('[vectors] MCP server ready on stdio')
+// Running this module as a process (e.g. `bun src/mcp/server.ts`, the wiring in
+// .mcp.json) starts the stdio server. Importing it (e.g. from ./http.ts) does not.
+if (import.meta.main) {
+  await createMcpServer().connect(new StdioServerTransport())
+  console.error('[vectors] MCP server ready on stdio')
+}

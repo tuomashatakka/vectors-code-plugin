@@ -15,4 +15,14 @@ export const mcpCommands: Command[] = [
       await import('../../mcp/server.ts')
     },
   },
+  {
+    path:        [ 'mcp', 'http' ],
+    summary:     'run the streamable-HTTP MCP server (network-reachable, for reverse proxies)',
+    usage:       'vectors mcp http',
+    longRunning: true,
+    async run () {
+      const { runHttpMcp } = await import('../../mcp/http.ts')
+      await runHttpMcp() // resolves once listening; the open socket keeps the process alive
+    },
+  },
 ]
