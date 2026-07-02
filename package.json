@@ -1,6 +1,6 @@
 {
   "name": "@tuomashatakka/vectors-plugin",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Global, local, project-partitioned semantic RAG: a vector-index skill plus an MCP server with per-project and cross-project (global) search. TypeScript on Bun, backed by Postgres + pgvector.",
   "homepage": "https://github.com/tuomashatakka/vectors-code-plugin",

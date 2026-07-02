@@ -169,9 +169,9 @@ Stateless (a fresh server per request), bound to
 `POST/GET/DELETE /mcp`, plus `GET /health` → `ok`.
 
 ```jsonc
-// Claude Code / VS Code:  { "type": "http",   "url": "http://127.0.0.1:8765/mcp" }
-// opencode:               { "type": "remote", "url": "http://127.0.0.1:8765/mcp" }
-// Claude Desktop:         { "command": "npx", "args": ["mcp-remote", "http://127.0.0.1:8765/mcp"] }
+// Claude Code / VS Code:  { "type": "http",   "url": "https://srv1697915.hstgr.cloud/mcp" }
+// opencode:               { "type": "remote", "url": "https://srv1697915.hstgr.cloud/mcp" }
+// Claude Desktop:         { "command": "npx", "args": ["mcp-remote", "https://srv1697915.hstgr.cloud/mcp"] }
 ```
 
 Like Claude Desktop, an HTTP client has no stable cwd — the server resolves
