@@ -24,7 +24,7 @@ vectors_codex_home() {
 #   dir_or_cmd:<dir>:<command>  enabled when dir exists or command is present
 #   desktop:<config>:<app>      enabled when config (or its dir) or the app exists
 # mcp_kind values:
-#   none | claude_cli | json
+#   none | claude_cli | json | toml (Codex config.toml [mcp_servers.*])
 # mcp_flavor values (json kind):
 #   claude (mcpServers/{command,args}) | opencode (mcp/{type:local,command:[]}) | vscode (servers/{type:stdio})
 vectors_environment_records() {
@@ -35,7 +35,7 @@ vectors_environment_records() {
   cat <<EOF_RECORDS
 claude_code	Claude Code	dir_or_cmd:$HOME/.claude:claude	$HOME/.claude/skills	$HOME/.claude/commands	claude_cli	-	-	-
 opencode	opencode	dir_or_cmd:$HOME/.config/opencode:opencode	$HOME/.config/opencode/skills	$HOME/.config/opencode/command	json	$HOME/.config/opencode/opencode.json	mcp	opencode
-codex	Codex	dir_or_cmd:$codex_home:codex	$codex_home/skills	$codex_home/commands	none	-	-	-
+codex	Codex	dir_or_cmd:$codex_home:codex	$codex_home/skills	$codex_home/commands	toml	$codex_home/config.toml	mcp_servers	codex
 antigravity	Antigravity	dir_or_cmd:$HOME/.gemini:antigravity	$HOME/.gemini/skills	-	json	$HOME/.antigravity/mcp_config.json	mcpServers	claude
 antigravity_ide	Antigravity (gemini-ide)	dir_or_cmd:$HOME/.gemini/antigravity-ide:antigravity	-	-	json	$HOME/.gemini/antigravity-ide/mcp_config.json	mcpServers	claude
 antigravity_gemini	Antigravity (gemini)	dir_or_cmd:$HOME/.gemini/antigravity:antigravity	-	-	json	$HOME/.gemini/antigravity/mcp_config.json	mcpServers	claude

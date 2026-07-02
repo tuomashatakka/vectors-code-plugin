@@ -139,7 +139,7 @@ async function dispatch (name: string, a: ToolArgs) {
  * (`./http.ts`) can bind their own transport to a fresh instance.
  */
 export function createMcpServer (): Server {
-  const server = new Server({ name: 'vectors', version: '0.2.0' }, { capabilities: { tools: {}}})
+  const server = new Server({ name: 'vectors', version: '0.3.0' }, { capabilities: { tools: {}}})
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }))
   server.setRequestHandler(CallToolRequestSchema, async req => {
     try {

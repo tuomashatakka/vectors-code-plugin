@@ -80,6 +80,35 @@ if (cfg[key] && typeof cfg[key] === "object" && cfg[key].vectors !== undefined) 
 ' "$1" "$2"
 }
 
+
+merge_toml_mcp(){ # $1=config.toml path (Codex)
+  node -e '
+const [path, cmd, arg] = process.argv.slice(1)
+const fs = require("fs"), p = require("path")
+let t = ""
+try { if (fs.existsSync(path)) t = fs.readFileSync(path, "utf8") } catch {}
+const block = "[mcp_servers.vectors]\ncommand = \"" + cmd + "\"\nargs = [\"" + arg + "\"]\n"
+const re = /\[mcp_servers\.vectors\][\s\S]*?(?=\n\[|\s*$)/
+if (re.test(t)) t = t.replace(re, block.trimEnd())
+else t = (t ? t.replace(/\s*$/, "\n\n") : "") + block
+fs.mkdirSync(p.dirname(path), { recursive: true })
+fs.writeFileSync(path, t)
+' "$1" "$MCP_CMD" "$MCP_ARG"
+}
+del_toml_mcp(){ # $1=config.toml path
+  [ -f "$1" ] || return 0
+  node -e '
+const [path] = process.argv.slice(1)
+const fs = require("fs")
+let t; try { t = fs.readFileSync(path, "utf8") } catch { process.exit(0) }
+const re = /\n*\[mcp_servers\.vectors\][\s\S]*?(?=\n\[|\s*$)/
+if (re.test(t)) {
+  fs.writeFileSync(path, t.replace(re, "\n"))
+  console.log("   removed vectors from " + path)
+}
+' "$1"
+}
+
 # Intent-memory hooks (Claude Code only — UserPromptSubmit + Stop are CC events).
 # Idempotent: keyed on the hook filename, so re-running never duplicates entries.
 merge_claude_hooks(){ # $1=settings.json path
@@ -138,6 +167,9 @@ bind_environment(){
     json)
       merge_json_mcp "$mcp_path" "$mcp_topkey" "$mcp_flavor"
       touched+=("mcp    -> $mcp_path"); note "registered MCP 'vectors'" ;;
+    toml)
+      merge_toml_mcp "$mcp_path"
+      touched+=("mcp    -> $mcp_path"); note "registered MCP 'vectors'" ;;
     none) ;;
   esac
   # Intent-memory hooks: Claude Code only (its settings.json lives beside skills/).
@@ -153,6 +185,7 @@ unbind_environment(){
   case "$mcp_kind" in
     claude_cli) have claude && claude mcp remove vectors -s user >/dev/null 2>&1 && note "removed claude code MCP 'vectors'" || true ;;
     json) del_json_mcp "$mcp_path" "$mcp_topkey" ;;
+    toml) del_toml_mcp "$mcp_path" ;;
     none) ;;
   esac
   [ "$id" = "claude_code" ] && del_claude_hooks "$HOME/.claude/settings.json"

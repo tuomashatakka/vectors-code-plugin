@@ -160,6 +160,24 @@ For Claude Desktop (no stable cwd) pin a project:
 }
 ```
 
+### Remote (streamable HTTP)
+
+`vectors mcp http` serves the same 13 tools over the MCP **streamable-HTTP**
+transport — for reverse-proxy or remote deployments (e.g. nginx `/mcp`).
+Stateless (a fresh server per request), bound to
+`127.0.0.1:$VINDEX_MCP_HTTP_PORT` (alias `PORT`, default `8765`):
+`POST/GET/DELETE /mcp`, plus `GET /health` → `ok`.
+
+```jsonc
+// Claude Code / VS Code:  { "type": "http",   "url": "http://127.0.0.1:8765/mcp" }
+// opencode:               { "type": "remote", "url": "http://127.0.0.1:8765/mcp" }
+// Claude Desktop:         { "command": "npx", "args": ["mcp-remote", "http://127.0.0.1:8765/mcp"] }
+```
+
+Like Claude Desktop, an HTTP client has no stable cwd — the server resolves
+projects from *its own* cwd, so pin `VINDEX_PROJECT` per deployment or lean on
+`search_global`.
+
 ## Intent memory (conversation-learning hooks)
 
 Beyond indexing files, the plugin learns from the *conversation*. Claude Code

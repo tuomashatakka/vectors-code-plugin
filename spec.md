@@ -551,11 +551,13 @@ systemd `--user` on Linux (`ukdb-daemon.service`).
 
 ---
 
-## 9. MCP tools (`src/mcp/server.ts`)
+## 9. MCP tools (`src/mcp/`)
 
-stdio MCP server (`@modelcontextprotocol/sdk`), 13 tools. Server name `vectors`,
-version `0.2.0`. Each tool returns a text content block (JSON). Where `project`
-is omitted it auto-resolves from cwd.
+`createMcpServer()` (`src/mcp/server.ts`) builds the server — name `vectors`,
+version `0.3.0`, `@modelcontextprotocol/sdk` — with 13 tools, served over two
+transports: **stdio** (`vectors mcp`; bootstrap gated behind `import.meta.main`)
+and **streamable HTTP** (`vectors mcp http`, § 9.1). Each tool returns a text
+content block (JSON). Where `project` is omitted it auto-resolves from cwd.
 
 | Tool | Required | Optional | Behavior |
 | --- | --- | --- | --- |
@@ -594,6 +596,18 @@ Example call/result:
 ```
 
 Bundled registration: `.mcp.json` → `bun ${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts`.
+
+### 9.1 Streamable-HTTP transport (`src/mcp/http.ts`)
+
+The network-reachable counterpart of stdio, deployable behind a reverse proxy
+(e.g. nginx `/mcp`). **Stateless**: a fresh `Server` +
+`StreamableHTTPServerTransport` (`sessionIdGenerator: undefined`) per request —
+the simplest robust shape behind a load-balancing/buffering proxy. Built on
+`node:http` (runs under Bun), binds `127.0.0.1:$VINDEX_MCP_HTTP_PORT` (alias
+`PORT`, default `8765`). Routes: `POST/GET/DELETE /mcp` (MCP),
+`GET /health` → `ok`. Boot runs `ensureSpace()` to bootstrap the schema on a
+fresh DB; SIGINT/SIGTERM drain the pg pool. The HTTP server has no client cwd —
+pin `VINDEX_PROJECT` per deployment or use `search_global`.
 
 ---
 
@@ -683,6 +697,7 @@ Ctrl-C exits.
 | `VINDEX_CHAT_INTERVAL` | `UKDB_CHAT_INTERVAL` | `5` (s) | Chat feeder cadence. |
 | `VINDEX_SOURCE_INTERVAL` | `UKDB_SOURCE_INTERVAL` | `300` (s) | Source feeder cadence. |
 | `VINDEX_VIEWER_PORT` | `PORT` | `7341` | 3D viewer port. |
+| `VINDEX_MCP_HTTP_PORT` | `PORT` | `8765` | Streamable-HTTP MCP port (`vectors mcp http`). |
 
 `DEFAULT_EMBED_DIM = 384`. Project resolution order (`resolveProjectName`):
 `$VINDEX_PROJECT` → nearest ancestor matching a `project.root_path` → nearest

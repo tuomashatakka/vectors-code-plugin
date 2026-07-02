@@ -138,7 +138,10 @@ finds (skill + `/vectors` command + MCP entry). MCP tools:
 `resolve_reference`, `recall_intents`, `resolve_intent`.
 
 Run the server standalone with `vectors mcp` (the bundled `.mcp.json` points
-plugin installs at `bun ${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts`).
+plugin installs at `bun ${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts`). For a
+network-reachable endpoint (reverse proxies, remote agents) run
+`vectors mcp http` — streamable HTTP on `127.0.0.1:8765`
+(`VINDEX_MCP_HTTP_PORT`), serving `POST/GET/DELETE /mcp` + `GET /health`.
 
 ### 3D viewer
 
@@ -177,6 +180,7 @@ aliases.
 | `VINDEX_CHAT_GLOBS` (alias `UKDB_CHAT_GLOBS`) | `~/.claude/projects/**/*.jsonl` | Transcript globs (daemon chat feeder). |
 | `VINDEX_CHAT_INTERVAL` / `VINDEX_SOURCE_INTERVAL` | `5` / `300` (s) | Feeder cadences. |
 | `VINDEX_VIEWER_PORT` (alias `PORT`) | `7341` | 3D viewer port. |
+| `VINDEX_MCP_HTTP_PORT` (alias `PORT`) | `8765` | Streamable-HTTP MCP port (`vectors mcp http`). |
 
 ## Architecture
 
@@ -189,7 +193,7 @@ src/
   search/       hybrid dense+sparse RRF + rerank + confidence; grounding, references, assemble, orchestration
   intents/      Postgres-backed intent memory (record/recall/resolve/grade)
   daemon/       supervisor + chat/source feeders + digest worker
-  mcp/          stdio MCP server (13 tools)
+  mcp/          MCP server: stdio + streamable HTTP (13 tools)
   viewer/       3D synapse viewer HTTP + JSON API (PCA)
 hooks/          UserPromptSubmit + Stop hooks (intent memory)
 references/     unified-knowledge-db.sql (full DDL) + design docs

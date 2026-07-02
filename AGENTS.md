@@ -38,7 +38,7 @@ Postgres: `export VINDEX_DSN=postgres://localhost:5432/vectors`.
 | `search/` | `search.ts` (hybrid dense+sparse RRF + rerank + confidence), `grounding.ts` (confidence tiers, claim verify), `references.ts` (citation extraction/validation), `assemble.ts` (token-budget assembly), `orchestration.ts` (Bridge-pattern layer weights). |
 | `intents/` | `store.ts` — Postgres-backed intent memory (record/recall/resolve/grade). |
 | `daemon/` | `daemon.ts` (supervisor), `feeders/chat.ts` + `feeders/source.ts`, `worker.ts` (digest-job drain). |
-| `mcp/` | `server.ts` — stdio MCP server, 13 tools. |
+| `mcp/` | `server.ts` (`createMcpServer` + stdio entry, 13 tools), `http.ts` (stateless streamable-HTTP transport — `vectors mcp http`, port 8765, `/mcp` + `/health`). |
 | `viewer/` | `server.ts` (live 3D synapse viewer HTTP + JSON API, PCA; exports `resolveCtx`/`buildGraph`/`buildStatus` + `/api/projects`), `make_demo.ts` (`exportStaticViewer` — self-contained all-projects HTML; `exportViewer` — procedural demo). |
 | `config.ts` | All env config. `VINDEX_*` canonical; `UKDB_*` accepted as deprecated aliases via `envAny()`. |
 | `guards.ts` | `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS` capability guards. |
