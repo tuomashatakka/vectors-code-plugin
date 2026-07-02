@@ -124,7 +124,21 @@
   #picker .pj .nm { color:var(--fg); font-weight:600; }
   #picker .pj .st { color:var(--faint); font-size:10.5px; }
 
-  @media (max-width:640px){ #legend,#hint{display:none} #detail{width:86vw} }
+  #inventory { top:96px; right:16px; width:min(38ch,86vw); max-height:calc(100vh - 150px);
+    display:none; flex-direction:column; overflow:hidden; opacity:0;
+    transform:translateY(6px); transition:opacity .22s, transform .22s; }
+  #inventory.show { display:flex; opacity:1; transform:none; }
+  #inventory .head { padding:12px 14px 10px; border-bottom:1px solid var(--line); }
+  #inventory .body { padding:12px 14px; overflow-y:auto; overflow-x:hidden; }
+  #inventory .body::-webkit-scrollbar { width:4px; }
+  #inventory .body::-webkit-scrollbar-thumb { background:var(--line-2); border-radius:2px; }
+  #inventory .kids { margin-left:13px; border-left:1px solid var(--line); padding-left:6px; }
+  #inventory .more { margin-top:8px; width:100%; background:#0f1118; border:1px solid var(--line-2);
+    color:var(--accent); border-radius:2px; padding:6px; cursor:pointer; font:inherit; font-size:10.5px; }
+  #inventory .more:hover { background:var(--accent); color:var(--bg); border-color:var(--accent); }
+  #datatoggle { display:block; }
+
+  @media (max-width:640px){ #legend,#hint{display:none} #detail,#inventory{width:86vw} }
 </style>
 </head>
 <body>
@@ -134,6 +148,7 @@
   <h1>synapse viewer</h1>
   <div class="meta" id="meta">loading…</div>
   <div class="switch" id="switch">▾ switch project</div>
+  <div class="switch" id="datatoggle">▸ data</div>
 </aside>
 
 <div id="searchbar" class="panel">
@@ -150,10 +165,19 @@
   <div class="body" id="d-body"></div>
 </section>
 
+<section id="inventory" class="panel">
+  <header class="head">
+    <div class="d-title" id="i-title">data</div>
+    <div class="badges" id="i-badges"></div>
+  </header>
+  <div class="body" id="i-body"></div>
+</section>
+
 <footer id="legend" class="panel"></footer>
 <div id="hint" class="panel">
   <kbd>drag</kbd> orbit · <kbd>wheel</kbd> zoom · <kbd>click</kbd> inspect ·
-  <kbd>↑↓←→</kbd> traverse relations · <kbd>esc</kbd> clear
+  <kbd>↑↓←→</kbd> traverse relations · <kbd>d</kbd> data ·
+  <kbd>esc</kbd> / empty click clear
 </div>
 
 <div id="picker"><div class="card"><h2>choose a project</h2><div id="picker-list"></div></div></div>
@@ -230,8 +254,8 @@ function applyCam(){
           target.z+radius*Math.sin(phi)*Math.sin(theta));
   camera.position.copy(_cp); camera.lookAt(target);
 }
-let drag=false, px=0, py=0;
-cv.addEventListener('pointerdown', e=>{ drag=true; px=e.clientX; py=e.clientY;
+let drag=false, px=0, py=0, downX=0, downY=0;
+cv.addEventListener('pointerdown', e=>{ drag=true; px=downX=e.clientX; py=downY=e.clientY;
   AUTOSPIN=false; cv.setPointerCapture(e.pointerId); });
 cv.addEventListener('pointerup',   e=>{ drag=false; try{cv.releasePointerCapture(e.pointerId)}catch(_){}});
 cv.addEventListener('pointercancel',()=>drag=false);
@@ -243,16 +267,16 @@ cv.addEventListener('wheel', e=>{ e.preventDefault();
   rTarget = Math.max(3.5, Math.min(70, rTarget*(1+Math.sign(e.deltaY)*0.09))); }, {passive:false});
 
 // ---- graph state ---------------------------------------------------------
-let nodes=[], pts=null, lines=null, focus=-1, adjacency={}, idById={};
-let aPos, aCol, aSize, aAlpha, sizeT, alphaT, popV, baseCol, hitSet=null;
+let nodes=[], pts=null, lines=null, focusLines=null, focus=-1, adjacency={}, idById={};
+let aPos, aCol, aSize, aAlpha, sizeT, alphaT, popV, baseCol, hitSet=null, hitWeights=null;
 let MODE='server', AUTOSPIN=false;
 const _c = new THREE.Color();
 
 function disposeMesh(m){ if(m){ scene.remove(m); m.geometry.dispose(); } }
 
 function renderGraph(g){
-  disposeMesh(pts); disposeMesh(lines);
-  nodes=g.nodes||[]; adjacency={}; idById={}; hitSet=null; focus=-1;
+  disposeMesh(pts); disposeMesh(lines); disposeMesh(focusLines);
+  nodes=g.nodes||[]; adjacency={}; idById={}; hitSet=null; hitWeights=null; focus=-1;
   const N=nodes.length;
   aPos=new Float32Array(N*3); aCol=new Float32Array(N*3);
   aSize=new Float32Array(N); aAlpha=new Float32Array(N);
@@ -289,6 +313,16 @@ function renderGraph(g){
     {vertexColors:true, transparent:true, opacity:0.6, depthWrite:false,
      blending:THREE.AdditiveBlending}));
   lines.frustumCulled=false; scene.add(lines);
+
+  // focused-node edge overlay — preallocated for the max degree, redrawn on focus change
+  let maxDeg=1; for(const key in adjacency) maxDeg=Math.max(maxDeg, adjacency[key].length);
+  const fgeo=new THREE.BufferGeometry();
+  fgeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxDeg*2*3),3));
+  fgeo.setDrawRange(0,0);
+  focusLines=new THREE.LineSegments(fgeo, new THREE.LineBasicMaterial(
+    {color:HOT, transparent:true, opacity:0.9, depthWrite:false,
+     blending:THREE.AdditiveBlending}));
+  focusLines.visible=false; focusLines.frustumCulled=false; scene.add(focusLines);
   restyle();
 }
 
@@ -299,13 +333,34 @@ function restyle(){
   for(let i=0;i<N;i++){
     let size=1.0, alpha=0.92; _c.fromArray(baseCol,i*3);
     if(hot){
-      if(hitSet.has(i)){ size=1.9; alpha=1.0; _c.lerp(new THREE.Color(1,1,1),0.18); }
+      if(hitSet.has(i)){ const w=hitWeights&&hitWeights.has(i)?hitWeights.get(i):0.7;
+        size=1.3+1.3*w; alpha=1.0; _c.lerp(new THREE.Color(1,1,1),0.10+0.15*w); }
       else { size=0.72; alpha=0.20; _c.multiplyScalar(0.6); }
     }
     if(i===focus){ size=Math.max(size,2.3); alpha=1.0; _c.set(HOT); }
     _c.toArray(aCol,i*3); sizeT[i]=size; alphaT[i]=alpha;
   }
   pts.geometry.attributes.color.needsUpdate=true;
+  updateFocusEdges();
+}
+
+// highlight the focused node's edges via the overlay mesh; dim the base mesh
+function updateFocusEdges(){
+  if(!focusLines) return;
+  if(focus<0||!nodes[focus]){
+    focusLines.visible=false;
+    if(lines) lines.material.opacity=0.6;
+    return;
+  }
+  const nb=adjacency[focus]||[], pos=focusLines.geometry.attributes.position.array;
+  const fp=nodes[focus].p;
+  nb.forEach((j,m)=>{ const o=m*6, np=nodes[j].p;
+    pos[o]=fp[0]; pos[o+1]=fp[1]; pos[o+2]=fp[2];
+    pos[o+3]=np[0]; pos[o+4]=np[1]; pos[o+5]=np[2]; });
+  focusLines.geometry.setDrawRange(0, nb.length*2);
+  focusLines.geometry.attributes.position.needsUpdate=true;
+  focusLines.visible=true;
+  if(lines) lines.material.opacity=0.14;
 }
 
 // ---- detail panel --------------------------------------------------------
@@ -398,11 +453,20 @@ function setFocus(i, skipLoad){
 // ---- picking -------------------------------------------------------------
 const ray=new THREE.Raycaster(); ray.params.Points.threshold=0.45;
 const _m=new THREE.Vector2();
+function clearFocus(){
+  focus=-1; hitSet=null; hitWeights=null; lastTokens=[]; restyle();
+  $('detail').classList.remove('show'); $('count').classList.remove('show');
+}
 cv.addEventListener('click', e=>{
   if(!pts) return;
+  if(Math.hypot(e.clientX-downX, e.clientY-downY)>6) return; // orbit drag, not a click
   _m.set((e.clientX/innerWidth)*2-1, -(e.clientY/innerHeight)*2+1);
   ray.setFromCamera(_m,camera);
   const hit=ray.intersectObject(pts);
+  if(focus>=0){ // selection locked: empty-space click deselects, node clicks are ignored
+    if(!hit.length) clearFocus();
+    return;
+  }
   if(hit.length){ // nearest to camera among picks
     hit.sort((a,b)=>a.distanceToRay-b.distanceToRay);
     setFocus(hit[0].index);
@@ -410,8 +474,8 @@ cv.addEventListener('click', e=>{
 });
 addEventListener('keydown', e=>{
   if(document.activeElement===$('q')) return;
-  if(e.key==='Escape'){ focus=-1; hitSet=null; lastTokens=[]; restyle();
-    $('detail').classList.remove('show'); $('count').classList.remove('show'); return; }
+  if(e.key==='Escape'){ clearFocus(); return; }
+  if(e.key==='d'||e.key==='D'){ toggleInventory(); return; }
   const nb=adjacency[focus]||[];
   if(['ArrowRight','ArrowDown'].includes(e.key)&&nb.length) setFocus(nb[(nb._i=((nb._i||0)+1)%nb.length)]);
   if(['ArrowLeft','ArrowUp'].includes(e.key)&&nb.length)  setFocus(nb[(nb._i=((nb._i||0)-1+nb.length)%nb.length)]);
@@ -420,17 +484,21 @@ addEventListener('keydown', e=>{
 // ---- search --------------------------------------------------------------
 async function serverSearch(q){
   const r=await (await fetch(API+'/api/search?q='+encodeURIComponent(q)+projQ('&'))).json();
-  const res=r.results||[]; const hits=new Set(); let topIdx=-1, top=null;
+  const res=r.results||[]; const hits=new Set(); const weights=new Map(); let topIdx=-1, top=null;
+  // min-max normalize within the result set — score is a rerank logit when reranked, so it can be negative
+  const scores=res.map(h=>h.score||0), lo=Math.min(...scores), span=Math.max(...scores)-lo;
   res.forEach(h=>{ const i=(typeof h.graph_index==='number')?h.graph_index:idById[h.id];
-    if(i!=null){ hits.add(i); if(topIdx<0){topIdx=i; top=h;} } });
-  return {hits, topIdx, top, n:res.length};
+    if(i!=null){ hits.add(i); weights.set(i, span>0?((h.score||0)-lo)/span:1);
+      if(topIdx<0){topIdx=i; top=h;} } });
+  return {hits, weights, topIdx, top, n:res.length};
 }
 function staticSearch(q){
-  const hits=new Set(); let topIdx=-1, best=0;
+  const hits=new Set(); const weights=new Map(); let topIdx=-1, best=0;
   nodes.forEach((n,i)=>{ const hay=((n.title||'')+' '+(n.source||'')+' '+(n.snippet||'')).toLowerCase();
     let s=0; lastTokens.forEach(t=>{ if(hay.includes(t)) s++; });
-    if(s>0){ hits.add(i); if(s>best){best=s;topIdx=i;} } });
-  return {hits, topIdx, top:null, n:hits.size};
+    if(s>0){ hits.add(i); weights.set(i,s); if(s>best){best=s;topIdx=i;} } });
+  weights.forEach((s,i)=>weights.set(i, s/(best||1)));
+  return {hits, weights, topIdx, top:null, n:hits.size};
 }
 async function runSearch(){
   const q=$('q').value.trim(); if(!q) return;
@@ -438,7 +506,7 @@ async function runSearch(){
   $('searchbar').classList.add('busy');
   try{
     const out = MODE==='static' ? staticSearch(q) : await serverSearch(q);
-    hitSet=out.hits; restyle();
+    hitSet=out.hits; hitWeights=out.weights||null; restyle();
     // staggered "pop" animation across the matched nodes (cascade)
     let k=0; out.hits.forEach(i=>{ popQueue.push({i, at:nowS()+ (k++)*0.035}); });
     const c=$('count'); c.textContent=out.n+' match'+(out.n===1?'':'es'); c.classList.add('show');
@@ -499,7 +567,7 @@ function frame(){
 
 // ---- meta + legend -------------------------------------------------------
 function setMeta(s){ $('meta').innerHTML=
-  `<b>${s.name}</b> · ${s.doc_count} chunks<br>${s.embed_model} · ${s.state}`; }
+  `<b>${s.name}</b> · ${s.documents!=null?s.documents+' docs · ':''}${s.doc_count} chunks<br>${s.embed_model} · ${s.state}`; }
 function buildLegend(){
   $('legend').innerHTML=Object.entries({section:'section',symbol:'symbol',
     definition:'definition',code:'code',text:'text'}).map(([k,l])=>
@@ -523,9 +591,10 @@ function showPicker(){ const L=$('picker-list');
   L.querySelectorAll('.pj').forEach(el=>el.addEventListener('click',()=>chooseProject(+el.getAttribute('data-i'))));
   $('picker').classList.add('show'); }
 function hidePicker(){ $('picker').classList.remove('show'); }
-function chooseProject(i){ const p=PROJECTS[i]; if(!p) return; hidePicker();
+function chooseProject(i){ const p=PROJECTS[i]; if(!p) return; hidePicker(); INV=null;
   if(PMODE==='static'){ bootFromData({status:p.status, graph:p.graph}); }
   else { PROJECT=p.name; history.replaceState(null,'','?project='+encodeURIComponent(p.name)); loadStatus(); loadGraph(); }
+  if($('inventory').classList.contains('show')) loadInventory();
   $('switch').textContent='▾ '+p.name; }
 function initStaticProjects(list){ PROJECTS=list; PMODE='static';
   $('switch').style.display='block'; $('switch').onclick=showPicker;
@@ -536,6 +605,95 @@ async function initServerProjects(){ try{
     if(!PROJECT && r.active) PROJECT=r.active;
     if(PROJECTS.length>1){ $('switch').style.display='block'; $('switch').onclick=showPicker; }
   }catch(_){ } }
+
+// ---- data inventory ------------------------------------------------------
+let INV=null;
+function toggleInventory(){
+  const el=$('inventory');
+  if(el.classList.contains('show')){ el.classList.remove('show'); return; }
+  el.classList.add('show');
+  if(!INV) loadInventory();
+}
+async function loadInventory(more){
+  if(MODE!=='server'){ renderInventoryStatic(); return; }
+  const offset = more&&INV ? INV.project.docs.length : 0;
+  try{
+    const r=await (await fetch(API+'/api/inventory?limit=200&offset='+offset+projQ('&'))).json();
+    if(r.error) throw 0;
+    if(more&&INV) INV.project.docs.push(...r.project.docs); else INV=r;
+    renderInventory(INV);
+  }catch(_){ $('i-body').innerHTML='<div class="loc">inventory unavailable</div>'; }
+}
+function renderInventory(inv){
+  const P=inv.project;
+  $('i-title').textContent=P.name;
+  $('i-badges').innerHTML=
+    `<span class="badge">${P.documents} docs</span>`+
+    `<span class="badge">${P.chunks} chunks</span>`+
+    `<span class="badge">${P.embedded} embedded</span>`+
+    `<span class="badge">${esc(P.embed_model)}</span>`;
+  const S=[];
+  if(P.sources&&P.sources.length) S.push(`<div class="sec"><h2>sources <span class="n">${P.sources.length}</span></h2>${
+    P.sources.map(s=>`<div class="row" style="cursor:default">
+      <span class="dot" style="background:${UNIT_COLORS.section}"></span>
+      <span class="lab"><span class="l1">${esc(s.id)} · ${esc(s.type)}</span><span class="l2">${
+        esc(s.path)}${s.globs&&s.globs.length?(' · '+esc(s.globs.join(' '))):''}</span></span></div>`).join('')}</div>`);
+  S.push(`<div class="sec"><h2>documents <span class="n">${P.docs_total}</span></h2>${
+    P.docs.map(d=>`<div class="row doc" data-doc="${d.id}">
+      <span class="dot" style="background:${UNIT_COLORS.text}"></span>
+      <span class="lab"><span class="l1">${esc(d.rel_path||d.title||d.id)}</span><span class="l2">${
+        esc(d.title||'')}${d.title?' · ':''}${d.chunks} chunks</span></span></div>
+      <div class="kids" data-kids="${d.id}"></div>`).join('')}${
+    P.docs.length<P.docs_total?`<button class="more" id="i-more">load more (${P.docs.length}/${P.docs_total})</button>`:''}</div>`);
+  S.push(globalSection(inv.global||[]));
+  $('i-body').innerHTML=S.join('');
+  wireInventory();
+}
+function globalSection(list){
+  return `<div class="sec"><h2>all projects <span class="n">${list.length}</span></h2>${
+    list.map(p=>`<div class="row proj" data-p="${esc(p.name)}">
+      <span class="dot" style="background:${p.name===PROJECT?HOT:UNIT_COLORS.definition}"></span>
+      <span class="lab"><span class="l1">${esc(p.name)}</span><span class="l2">${
+        p.documents} docs · ${p.chunks} chunks · ${p.embedded} embedded</span></span></div>`).join('')}</div>`;
+}
+function wireInventory(){
+  $('i-body').querySelectorAll('.row.doc').forEach(el=>
+    el.addEventListener('click',()=>expandDoc(el.getAttribute('data-doc'))));
+  $('i-body').querySelectorAll('.row.proj').forEach(el=>
+    el.addEventListener('click',()=>{
+      const i=PROJECTS.findIndex(p=>p.name===el.getAttribute('data-p'));
+      if(i>=0) chooseProject(i); }));
+  const more=$('i-more'); if(more) more.addEventListener('click',()=>loadInventory(true));
+}
+async function expandDoc(id){
+  const kids=document.querySelector(`[data-kids="${id}"]`); if(!kids) return;
+  if(kids.innerHTML){ kids.innerHTML=''; return; } // collapse
+  kids.innerHTML='<div class="loc">…</div>';
+  try{
+    const d=await (await fetch(API+'/api/doc?id='+encodeURIComponent(id)+projQ('&'))).json();
+    if(d.error) throw 0;
+    kids.innerHTML=d.chunks.map(c=>`<div class="row chunk" data-id="${c.id}">
+      <span class="dot" style="background:${colorOf(c.unit_type)}"></span>
+      <span class="lab"><span class="l1">${esc(c.title||('chunk '+c.ordinal))}</span><span class="l2">#${
+        c.ordinal} · ${c.unit_type||'text'}${c.token_count!=null?(' · '+c.token_count+' tok'):''}${
+        c.embedded?'':' · not embedded'}</span></span></div>`).join('');
+    kids.querySelectorAll('.row.chunk').forEach(el=>
+      el.addEventListener('click',()=>{
+        const cid=el.getAttribute('data-id'), gi=idById[cid];
+        if(gi!=null) setFocus(gi); else loadNode(cid); }));
+  }catch(_){ kids.innerHTML='<div class="loc">failed to load chunks</div>'; }
+}
+function renderInventoryStatic(){
+  $('i-title').textContent='data';
+  $('i-badges').innerHTML='<span class="badge">static export</span>';
+  $('i-body').innerHTML=globalSection((PROJECTS||[]).map(p=>({
+    name:p.name,
+    documents:p.documents!=null?p.documents:'?',
+    chunks:p.chunks!=null?p.chunks:(p.status?p.status.doc_count:0),
+    embedded:p.embedded!=null?p.embedded:'?'})));
+  wireInventory();
+}
+$('datatoggle').onclick=toggleInventory;
 
 // procedural offline preview (file:// or VINDEX_DEMO)
 function _gauss(){ let u=0,v=0; while(!u)u=Math.random(); while(!v)v=Math.random();

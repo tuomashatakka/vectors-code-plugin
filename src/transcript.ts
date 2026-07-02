@@ -15,6 +15,17 @@ export interface TranscriptMessage {
 }
 
 /**
+ * Harness-injected "user" text that is not a human intent: background-task
+ * notifications, system reminders, slash-command envelopes, command output.
+ * The intent hooks and the grader must skip these or they pollute the store.
+ */
+const MACHINE_TEXT_RE = /^\s*(\[SYSTEM NOTIFICATION|<(task-notification|system-reminder|local-command-stdout|command-name|command-message)\b)/
+
+export function isMachineText (text: string): boolean {
+  return MACHINE_TEXT_RE.test(text)
+}
+
+/**
  * Tolerant: transcript `content` may be a string, a list of typed parts, or a
  * dict. Tool-result parts nest their own list of blocks, so recurse instead of
  * assuming each part flattens to a string.

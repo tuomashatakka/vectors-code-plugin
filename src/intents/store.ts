@@ -12,7 +12,7 @@
  */
 import { createHash } from 'node:crypto'
 import { q, q1, tx } from '../db/pool.ts'
-import { lastExchanges } from '../transcript.ts'
+import { isMachineText, lastExchanges } from '../transcript.ts'
 import {
   INTENT_MIN_SCORE,
   INTENT_MAX_TOKENS,
@@ -448,7 +448,7 @@ export class IntentStore {
    */
   async gradePending (transcriptPath: string): Promise<number> {
     const msgs  = await lastExchanges(transcriptPath, 12)
-    const users = msgs.filter(m => m.role === 'user').map(m => m.text)
+    const users = msgs.filter(m => m.role === 'user' && !isMachineText(m.text)).map(m => m.text)
     let lastAssistant = ''
     for (let i = msgs.length - 1; i >= 0; i--)
       if (msgs[i].role === 'assistant') {

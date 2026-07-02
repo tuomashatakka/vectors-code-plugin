@@ -625,6 +625,11 @@ Claude Code hooks wired via the plugin manifest (`hooks/hooks.json`):
   `vectors intent grade <transcript>` so the (possibly slow) Ollama judge never
   holds up the turn. No-op under `VINDEX_INTENT_DISABLE`; always exits 0.
 
+Both paths skip harness-injected "user" text (`isMachineText` in
+`src/transcript.ts`): task-notifications, system reminders, slash-command
+envelopes, and command output are neither recorded, recalled against, nor
+graded — only genuine human prompts enter the intent store.
+
 ---
 
 ## 11. CLI surface (`src/cli/`)
@@ -711,8 +716,23 @@ ancestor with a `.vindex`/`.git` marker (basename) → `$VINDEX_DEFAULT`.
 on `127.0.0.1` plus a JSON API (`node:http`, runs under Bun). PCA via `ml-pca`.
 
 - `GET /` — the viewer page.
-- `GET /api/status` — `{ name, doc_count (chunks), embed_model, state }`
-  (`state` = `ready` or `embedding X/Y`).
+- `GET /api/status` — `{ name, doc_count (chunks, kept for old baked payloads),
+  documents, chunks, embedded, embed_model, state }` (`state` = `ready` or
+  `embedding X/Y`).
+- `GET /api/inventory?limit=&offset=` — full data inventory:
+  `{ project: { name, embed_model, documents, chunks, embedded, state, sources,
+  docs, docs_total, offset, limit }, global }`. `sources` is the project's
+  `SourceConfig[]`, `docs` a paginated document listing (`limit` 1–500, default
+  200) with per-document chunk counts, `global` the `listProjects()` summaries.
+- `GET /api/doc?id=…` — one document's chunk listing (inventory drill-down
+  leaf): `{ id, rel_path, title, chunks: [{ id, ordinal, title, unit_type,
+  token_count, embedded }] }`.
+- `GET /api/node?id=…` — full chunk detail for the side panel: `{ id, title,
+  source (rel_path), source_id, chunk (ordinal), unit_type, url, text, symbol,
+  char_count, references, relations, document }`. `references` come from
+  `link`→`reference` rows, `document` lists ordinal-ordered siblings (with
+  `self` + `graph_index` when sampled), `relations` are the top-6 cosine
+  neighbours within the currently sampled graph (empty until `/api/graph` ran).
 - `GET /api/graph?n=400&k=3` — sample up to `n` embedded chunks (`n` 50–1200),
   PCA(3) project their real embeddings into a `~[-6,6]` box, and build `k` (1–6)
   nearest-neighbour synapse links by cosine. Returns `{ nodes, links, k }`; nodes
@@ -722,6 +742,23 @@ on `127.0.0.1` plus a JSON API (`node:http`, runs under Bun). PCA via `ml-pca`.
   sampled graph carry a `graph_index`, otherwise PCA coords `p` + nearest
   `attach` links. Each entry carries `score`, optional `rerank_score`, and
   `signals` (`dense`/`sparse`).
+
+Interaction semantics in the viewer page:
+
+- **Selection lock** — while a node is focused, pointer clicks cannot re-target
+  the selection; a click on empty space or `Esc` deselects. Arrow-key traversal
+  and detail/inventory row clicks still move the focus deliberately.
+- **Focused edges** — the focused node's incident edges are drawn on a bright
+  overlay `LineSegments` (preallocated to the max node degree) while the base
+  edge mesh dims to opacity `0.14`; both restore on deselect.
+- **Weighted search hits** — result nodes scale `1.3–2.6` by their final hybrid
+  `score` normalized against the best hit (static exports fall back to
+  token-match counts); non-hits dim as before.
+- **Data inventory** — the `▸ data` brand link or `d` toggles a right-side panel
+  listing the project's sources and documents (expandable to per-chunk rows via
+  `/api/doc`; chunk rows focus the graph node or load its detail) plus all
+  projects globally; clicking a project switches the viewer to it. Static
+  exports show the global list only.
 
 `vectors viewer export [out]` (`make_demo.ts`) writes a standalone
 `docs/viewer-demo.html` by injecting `window.VINDEX_DEMO=true` into the canonical

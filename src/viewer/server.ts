@@ -3,7 +3,10 @@
  *
  * Serves assets/viewer.html plus a tiny JSON API over a project's vector index:
  *   GET /                       the viewer page
- *   GET /api/status             live index status (name, doc_count, ...)
+ *   GET /api/status             live index status (name, documents, chunks, ...)
+ *   GET /api/inventory          data inventory: sources + paginated documents + global projects
+ *   GET /api/doc?id=...         one document's chunk listing (inventory drill-down leaf)
+ *   GET /api/node?id=...        full chunk detail: text, references, siblings, PCA relations
  *   GET /api/graph?n=400&k=3    sampled chunks + knn synapse links; positions
  *                               are a PCA(3) projection of the real embeddings
  *   GET /api/search?q=...       reranked search; hits carry a graph_index when
@@ -20,8 +23,10 @@ import { fileURLToPath } from 'node:url'
 import { PCA } from 'ml-pca'
 
 import { q, q1, toVector } from '../db/pool.ts'
-import { getProject, listProjects } from '../db/projects.ts'
+import { getProject, getSources, listProjects } from '../db/projects.ts'
 import { searchProject } from '../search/search.ts'
+import type { SourceConfig } from '../db/types.ts'
+import type { ProjectSummary } from '../db/projects.ts'
 
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -288,6 +293,9 @@ async function runSearch (ctx: ProjectCtx, query: string): Promise<{ query: stri
 interface StatusResult {
   name:        string;
   doc_count:   number;
+  documents:   number;
+  chunks:      number;
+  embedded:    number;
   embed_model: string;
   state:       string;
 }
@@ -304,10 +312,262 @@ export async function buildStatus (ctx: ProjectCtx): Promise<StatusResult> {
   const embedded = counts?.embedded ?? 0
   return {
     name:        ctx.name,
-    doc_count:   chunks,
+    doc_count:   chunks, // kept as the chunk count for older baked static payloads
+    documents:   counts?.documents ?? 0,
+    chunks,
+    embedded,
     embed_model: ctx.embedModel,
     state:       embedded >= chunks ? 'ready' : `embedding ${embedded}/${chunks}`,
   }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+interface InventoryDoc {
+  id:        string;
+  source_id: string | null;
+  rel_path:  string | null;
+  title:     string | null;
+  url:       string | null;
+  mtime:     string | null;
+  chunks:    number;
+}
+
+interface InventoryResult {
+  project: {
+    name:        string;
+    embed_model: string;
+    documents:   number;
+    chunks:      number;
+    embedded:    number;
+    state:       string;
+    sources:     SourceConfig[];
+    docs:        InventoryDoc[];
+    docs_total:  number;
+    offset:      number;
+    limit:       number;
+  };
+  global: ProjectSummary[];
+}
+
+/** Full data inventory: project sources + paginated documents + global project list. */
+export async function buildInventory (ctx: ProjectCtx, limit: number, offset: number): Promise<InventoryResult> {
+  const status  = await buildStatus(ctx)
+  const sources = await getSources(ctx.name)
+  const docs    = await q<InventoryDoc>(
+    `SELECT d.id, d.source_id, d.rel_path, d.title, d.url, d.mtime,
+            (SELECT count(*) FROM chunk c WHERE c.document_id = d.id)::int AS chunks
+     FROM document d WHERE d.project_id = $1
+     ORDER BY d.source_id, d.rel_path
+     LIMIT $2 OFFSET $3`,
+    [ ctx.id, limit, offset ],
+  )
+  return {
+    project: {
+      name:        ctx.name,
+      embed_model: ctx.embedModel,
+      documents:   status.documents,
+      chunks:      status.chunks,
+      embedded:    status.embedded,
+      state:       status.state,
+      sources,
+      docs,
+      docs_total:  status.documents,
+      offset,
+      limit,
+    },
+    global: await listProjects(),
+  }
+}
+
+interface DocResult {
+  id:       string;
+  rel_path: string | null;
+  title:    string | null;
+  chunks:   { id: string;
+    ordinal:      number;
+    title:        string | null;
+    unit_type:    string | null;
+    token_count:  number | null;
+    embedded:     boolean; }[];
+}
+
+/** One document's chunk listing — the drill-down leaf of the inventory tree. */
+export async function buildDoc (ctx: ProjectCtx, id: string): Promise<DocResult | null> {
+  if (!UUID_RE.test(id))
+    return null
+
+  const doc = await q1<{ id: string; rel_path: string | null; title: string | null }>(
+    'SELECT id, rel_path, title FROM document WHERE id = $1 AND project_id = $2',
+    [ id, ctx.id ],
+  )
+  if (!doc)
+    return null
+
+  const chunks = await q<DocResult['chunks'][number]>(
+    `SELECT id, ordinal, title, unit_type, token_count,
+            (embedding_id IS NOT NULL) AS embedded
+     FROM chunk WHERE document_id = $1 ORDER BY ordinal`,
+    [ id ],
+  )
+  return { ...doc, chunks }
+}
+
+interface NodeRelation {
+  id:           string;
+  title:        string | null;
+  source:       string;
+  chunk:        number;
+  unit_type:    string | null;
+  score:        number;
+  graph_index?: number;
+}
+
+interface NodeResult {
+  id:         string;
+  title:      string | null;
+  source:     string;
+  source_id:  string;
+  chunk:      number;
+  unit_type:  string | null;
+  url:        string | null;
+  text:       string;
+  symbol:     string | null;
+  char_count: number;
+  references: { kind: string; uri: string }[];
+  relations:  NodeRelation[];
+  document:   { id: string;
+    title:          string | null;
+    chunk:          number;
+    unit_type:      string | null;
+    self?:          boolean;
+    graph_index?:   number; }[];
+}
+
+/** Full node detail for the viewer panel: chunk text, references, siblings, PCA relations. */
+export async function buildNode (ctx: ProjectCtx, id: string): Promise<NodeResult | null> {
+  if (!UUID_RE.test(id))
+    return null
+
+  const row = await q1<{ id: string;
+    title:                   string | null;
+    text:                    string | null;
+    url:                     string | null;
+    ordinal:                 number | null;
+    unit_type:               string | null;
+    symbol:                  string | null;
+    document_id:             string;
+    rel_path:                string | null;
+    source_id:               string | null; }>(
+    `SELECT c.id, c.title, c.text, c.url, c.ordinal, c.unit_type, c.symbol, c.document_id,
+            d.rel_path, d.source_id
+     FROM chunk c JOIN document d ON d.id = c.document_id
+     WHERE c.id = $1 AND c.project_id = $2`,
+    [ id, ctx.id ],
+  )
+  if (!row)
+    return null
+
+  const references = await q<{ kind: string; uri: string }>(
+    `SELECT r.kind, r.uri
+     FROM link l JOIN reference r ON r.id = l.dst_id
+     WHERE l.src_kind = 'chunk' AND l.src_id = $1 AND l.dst_kind = 'reference'`,
+    [ id ],
+  )
+
+  const siblings = await q<{ id: string; title: string | null; ordinal: number | null; unit_type: string | null }>(
+    'SELECT id, title, ordinal, unit_type FROM chunk WHERE document_id = $1 ORDER BY ordinal',
+    [ row.document_id ],
+  )
+  const document = siblings.map(s => {
+    const entry: NodeResult['document'][number] = {
+      id:        s.id,
+      title:     s.title,
+      chunk:     s.ordinal ?? 0,
+      unit_type: s.unit_type,
+    }
+    if (s.id === id)
+      entry.self = true
+
+    const gi = graphState.idToIdx.get(s.id)
+    if (gi != null)
+      entry.graph_index = gi
+    return entry
+  })
+
+  const relations = await nodeRelations(ctx, id)
+
+  return {
+    id:         row.id,
+    title:      row.title,
+    source:     row.rel_path ?? '',
+    source_id:  row.source_id ?? '',
+    chunk:      row.ordinal ?? 0,
+    unit_type:  row.unit_type,
+    url:        row.url,
+    text:       row.text ?? '',
+    symbol:     row.symbol,
+    char_count: (row.text ?? '').length,
+    references,
+    relations,
+    document,
+  }
+}
+
+/** Top cosine neighbours of a chunk within the currently sampled graph. */
+async function nodeRelations (ctx: ProjectCtx, id: string): Promise<NodeRelation[]> {
+  if (!graphState.pca || !graphState.vecs.length)
+    return []
+
+  const selfIdx = graphState.idToIdx.get(id)
+  let vec       = selfIdx != null ? graphState.vecs[selfIdx] : undefined
+  if (!vec) {
+    const emb = await q1<{ embedding: string }>(
+      `SELECT e.embedding FROM chunk c
+       JOIN ${ctx.embTable} e ON e.embedding_id = c.embedding_id
+       WHERE c.id = $1`,
+      [ id ],
+    )
+    if (!emb)
+      return []
+    vec = parseVector(emb.embedding)
+  }
+
+  const sims = graphState.vecs.map((gv, i) => [ dot(gv, vec), i ] as [number, number])
+    .filter(([ , i ]) => i !== selfIdx)
+  sims.sort((a, b) => b[0] - a[0])
+
+  const top     = sims.slice(0, 6)
+  const idByIdx = new Map<number, string>()
+  for (const [ cid, i ] of graphState.idToIdx)
+    idByIdx.set(i, cid)
+
+  const ids  = top.map(([ , i ]) => idByIdx.get(i)).filter((x): x is string => x != null)
+  const meta = ids.length
+    ? await q<{ id: string; title: string | null; ordinal: number | null; unit_type: string | null }>(
+      'SELECT id, title, ordinal, unit_type FROM chunk WHERE id = ANY($1)',
+      [ ids ],
+    )
+    : []
+  const metaById = new Map(meta.map(m => [ m.id, m ]))
+
+  const out: NodeRelation[] = []
+  for (const [ s, i ] of top) {
+    const cid = idByIdx.get(i)
+    const m   = cid ? metaById.get(cid) : undefined
+    if (!cid || !m)
+      continue
+    out.push({
+      id:          cid,
+      title:       m.title,
+      source:      m.title ?? '',
+      chunk:       m.ordinal ?? 0,
+      unit_type:   m.unit_type,
+      score:       Math.round(s * 1e4) / 1e4,
+      graph_index: i,
+    })
+  }
+  return out
 }
 
 const DEFAULT_PORT = VIEWER_PORT
@@ -354,7 +614,27 @@ export async function runViewer (defaultName: string, port: number = DEFAULT_POR
         else if (path === '/api/projects')
           sendJson({ projects: await listProjects(), active: defaultName })
         else if (path === '/api/status')
-          sendJson(await buildStatus(await ctxFor(pname))); else if (path === '/api/graph') {
+          sendJson(await buildStatus(await ctxFor(pname)))
+        else if (path === '/api/inventory') {
+          const limit  = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? '200') || 200))
+          const offset = Math.max(0, Number(url.searchParams.get('offset') ?? '0') || 0)
+          sendJson(await buildInventory(await ctxFor(pname), limit, offset))
+        }
+        else if (path === '/api/doc') {
+          const doc = await buildDoc(await ctxFor(pname), url.searchParams.get('id') ?? '')
+          if (doc)
+            sendJson(doc)
+          else
+            sendJson({ error: 'not found' }, 404)
+        }
+        else if (path === '/api/node') {
+          const node = await buildNode(await ctxFor(pname), url.searchParams.get('id') ?? '')
+          if (node)
+            sendJson(node)
+          else
+            sendJson({ error: 'not found' }, 404)
+        }
+        else if (path === '/api/graph') {
           const n = Math.min(1200, Math.max(50, Number(url.searchParams.get('n') ?? '400') || 400))
           const k = Math.min(6, Math.max(1, Number(url.searchParams.get('k') ?? '3') || 3))
           sendJson(await buildGraph(await ctxFor(pname), n, k))

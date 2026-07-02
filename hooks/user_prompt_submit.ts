@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path'
 import { IntentStore } from '../src/intents/store.ts'
 import type { RecallMatch } from '../src/intents/store.ts'
 import { INTENT_DISABLED, INTENT_MAX_TOKENS } from '../src/config.ts'
+import { isMachineText } from '../src/transcript.ts'
 
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -75,7 +76,7 @@ async function main (): Promise<void> {
   const prompt  = String(payload.prompt ?? '').trim()
   const cwd     = typeof payload.cwd === 'string' ? payload.cwd : process.cwd()
   const session = typeof payload.session_id === 'string' ? payload.session_id : ''
-  if (!prompt)
+  if (!prompt || isMachineText(prompt))
     return
 
   const budgetMs = Number(process.env.VINDEX_INTENT_TIMEOUT || '1.5') * 1000
