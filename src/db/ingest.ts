@@ -5,9 +5,11 @@
  * embedding space by content hash (UNIQUE (space_id, content_hash)).
  */
 import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { q, q1, tx, toVector } from './pool.ts'
+import { notifyEvent } from './notify.ts'
 import { getOrCreateProject, getSources } from './projects.ts'
 import { chunkFile, pickStrategy } from '../chunk/chunker.ts'
 import { astChunks, astImports } from '../chunk/ast.ts'
@@ -25,7 +27,33 @@ function approxTokens (text: string): number {
   return Math.max(1, Math.round(text.length / 4))
 }
 
-/** List files under a source root matching its globs. Uses Bun.Glob. */
+/**
+ * Relative paths under `root` that git ignores, resolved with one
+ * `git check-ignore --stdin -z` round trip. Resolves to an empty set when git
+ * is missing or `root` is not inside a work tree, so ingest keeps working.
+ */
+async function gitIgnored (root: string, files: string[]): Promise<Set<string>> {
+  if (files.length === 0)
+    return new Set()
+  return new Promise(resolve => {
+    const proc = spawn('git', [ '-C', root, 'check-ignore', '--stdin', '-z' ], { stdio: [ 'pipe', 'pipe', 'ignore' ]})
+    let out    = ''
+    proc.stdout.setEncoding('utf8')
+    proc.stdout.on('data', d => {
+      out += d
+    })
+    proc.on('error', () => resolve(new Set()))
+    proc.on('close', () => resolve(new Set(out.split('\0').filter(Boolean))))
+    proc.stdin.on('error', () => { /* EPIPE when git exits early (not a repo) */ })
+    proc.stdin.end(files.join('\0') + '\0')
+  })
+}
+
+/**
+ * List files under a source root matching its globs. Uses Bun.Glob. `.git/`
+ * internals are always dropped, and files matched by .gitignore are skipped
+ * unless the source opts in with `include_ignored: true`.
+ */
 async function listFiles (source: SourceConfig): Promise<string[]> {
   const globs = source.globs?.length ? source.globs : [ '**/*' ]
   const found = new Set<string>()
@@ -39,7 +67,15 @@ async function listFiles (source: SourceConfig): Promise<string[]> {
       for await (const abs of glob(join(source.path, pattern)))
         found.add(relative(source.path, abs as string))
   }
-  return [ ...found ].sort()
+
+  let files = [ ...found ].filter(rel => !rel.split('/').includes('.git'))
+    .sort()
+  if (!source.include_ignored) {
+    const ignored = await gitIgnored(source.path, files)
+    if (ignored.size)
+      files = files.filter(rel => !ignored.has(rel))
+  }
+  return files
 }
 
 /** Build a public URL for a file from the source's base_url template. */
@@ -175,8 +211,12 @@ export async function ingestProject (name: string, rebuild = false): Promise<Ing
             )
           }
       })
+
+      await notifyEvent('ingest', { project: name, file: rel, chunks: produced.length })
     }
   }
+
+  await notifyEvent('ingest_done', { ...stats })
   return stats
 }
 

@@ -32,14 +32,14 @@ Postgres: `export VINDEX_DSN=postgres://localhost:5432/vectors`.
 | Path | Responsibility |
 | --- | --- |
 | `cli/` | CLI registry: `index.ts` (dispatch + `help`; bare `vectors` → TUI), `kit.ts` (command type incl. `hidden`, arg parse, result print), `tui.ts` (opentui interactive shell: autocomplete + project switcher), `commands/*.ts` (one module per command group — `index`, `search`, `ls`, `viewer`, `daemon`, `mcp`, `setup`, `doctor`, `intent`). |
-| `db/` | `pool.ts` (pg pool, `q`/`q1`/`tx`/`toVector`), `schema.ts` (apply DDL + migrations + `ensureSpace`), `projects.ts` (registry + cwd auto-resolution), `ingest.ts` (diff-by-hash ingest + AST chunks + import edges), `types.ts` (shared domain types). |
+| `db/` | `pool.ts` (pg pool, `q`/`q1`/`tx`/`toVector`), `schema.ts` (apply DDL + migrations + `ensureSpace`), `projects.ts` (registry + cwd auto-resolution), `ingest.ts` (diff-by-hash ingest + AST chunks + import edges; skips `.gitignore`d files by default), `notify.ts` (`pg_notify` event bus — search/ingest activity for the viewer's SSE), `types.ts` (shared domain types). |
 | `chunk/` | `chunker.ts` (markdown/code/text/auto line+char windows), `ast.ts` (tree-sitter WASM per-symbol chunks + import graph), `units.ts` (`unit_type` classifier). |
 | `embed/` | `embedder.ts` (feature-extraction, mean-pool + L2-norm), `rerank.ts` (cross-encoder sequence classification). |
 | `search/` | `search.ts` (hybrid dense+sparse RRF + rerank + confidence), `grounding.ts` (confidence tiers, claim verify), `references.ts` (citation extraction/validation), `assemble.ts` (token-budget assembly), `orchestration.ts` (Bridge-pattern layer weights). |
 | `intents/` | `store.ts` — Postgres-backed intent memory (record/recall/resolve/grade). |
 | `daemon/` | `daemon.ts` (supervisor), `feeders/chat.ts` + `feeders/source.ts`, `worker.ts` (digest-job drain). |
 | `mcp/` | `server.ts` (`createMcpServer` + stdio entry, 13 tools), `http.ts` (stateless streamable-HTTP transport — `vectors mcp http`, port 8765, `/mcp` + `/health`). |
-| `viewer/` | `server.ts` (live 3D synapse viewer HTTP + JSON API, PCA; exports `resolveCtx`/`buildGraph`/`buildStatus` + `/api/projects`), `make_demo.ts` (`exportStaticViewer` — self-contained all-projects HTML; `exportViewer` — procedural demo). |
+| `viewer/` | `server.ts` (live 3D synapse viewer HTTP + JSON API; `?project=*` all-projects scope, `/api/events` SSE, full-document `/api/doc?full=1`), `graph.ts` (per-project PCA clusters, knn links, golden-spiral layout, retained projection state), `make_demo.ts` (`exportStaticViewer` — self-contained all-projects HTML; `exportViewer` — procedural demo). |
 | `config.ts` | All env config. `VINDEX_*` canonical; `UKDB_*` accepted as deprecated aliases via `envAny()`. |
 | `guards.ts` | `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS` capability guards. |
 | `transcript.ts` | Tolerant JSONL transcript parsing (daemon chat feeder + intent grader). |

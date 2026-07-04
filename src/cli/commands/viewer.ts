@@ -13,12 +13,12 @@ export const viewerCommands: Command[] = [
   {
     path:    [ 'viewer' ],
     summary: 'write a static offline viewer (all projects) — or run --serve live',
-    usage:   'vectors viewer [name] [outPath] [--serve]',
-    options: { serve: { type: 'boolean' }},
+    usage:   'vectors viewer [name] [outPath] [--serve] [--all]',
+    options: { serve: { type: 'boolean' }, all: { type: 'boolean' }},
     async run (ctx) {
       if (flag(ctx, 'serve')) {
-        const { runViewer } = await import('../../viewer/server.ts')
-        await runViewer(firstName(ctx.argv) ?? await resolveProjectName())
+        const { runViewer, ALL_SCOPE } = await import('../../viewer/server.ts')
+        await runViewer(flag(ctx, 'all') ? ALL_SCOPE : firstName(ctx.argv) ?? await resolveProjectName())
         await new Promise<void>(() => {}) // keep the pool open while serving
         return
       }

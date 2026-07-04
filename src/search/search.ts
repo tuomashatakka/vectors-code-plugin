@@ -5,6 +5,7 @@
  * to topk. Global search fans the same pipeline across every project and merges.
  */
 import { q, q1, toVector } from '../db/pool.ts'
+import { notifyEvent } from '../db/notify.ts'
 import { getProject, listProjects } from '../db/projects.ts'
 import { embedOne } from '../embed/embedder.ts'
 import { rerank } from '../embed/rerank.ts'
@@ -149,6 +150,12 @@ export async function searchProject (
   const hits       = await finalize(query, [ ...hitMap.values() ], doRerank ? proj.rerank_model : null, topk, doRerank)
   const confidence = confidenceTier(hits)
   const agreement  = hits.slice(0, 3).some(h => h.dense > 0 && h.sparse > 0)
+  await notifyEvent('search', {
+    project: projectName,
+    query,
+    confidence,
+    hits:    hits.slice(0, 12).map(h => ({ id: h.chunk_id, project: h.project })),
+  })
   return { query, project: projectName, hits, confidence, agreement }
 }
 
@@ -180,6 +187,12 @@ export async function searchGlobal (
   const hits       = await finalize(query, merged, doRerank ? DEFAULT_RERANK : null, topk, doRerank)
   const confidence = confidenceTier(hits)
   const agreement  = hits.slice(0, 3).some(h => h.dense > 0 && h.sparse > 0)
+  await notifyEvent('search', {
+    project: '*',
+    query,
+    confidence,
+    hits:    hits.slice(0, 12).map(h => ({ id: h.chunk_id, project: h.project })),
+  })
   return { query, project: '*', hits, confidence, agreement }
 }
 

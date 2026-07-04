@@ -399,7 +399,11 @@ imports (see §6).
 2. Resolve project + its `emb_<space>` table; if `rebuild`, `DELETE FROM
    document WHERE project_id=…` first.
 3. For each source (`assertAllowedRoot(source.path)`), list files via `Bun.Glob`
-   (fallback `node:fs/promises` glob), sorted.
+   (fallback `node:fs/promises` glob), sorted. `.git/` internals are always
+   dropped, and **files matched by `.gitignore` are skipped by default** (one
+   `git check-ignore --stdin -z` round trip per source; a missing git or a
+   non-repo path degrades to no filtering). A source can opt back in with
+   `include_ignored: true` in its `SourceConfig`.
 4. For each file: read UTF-8 (skip unreadable/binary), `sha256` the whole file.
    **Diff-by-hash**: if a `document` row exists with the same `content_hash`,
    skip it (unchanged).
@@ -421,6 +425,15 @@ imports (see §6).
 `reindexProject(name)` = `ingestProject(name, true)`. Returns `IngestStats {
 project, filesScanned, filesChanged, chunks }`. Token counts are estimated
 `~len/4`.
+
+**Live events** (`src/db/notify.ts`): every ingested file emits
+`pg_notify('vindex_events', json)` (`{ type:'ingest', project, file, chunks }`),
+and each run ends with `{ type:'ingest_done', ...IngestStats }`. Searches emit
+`{ type:'search', project, query, confidence, hits:[{id, project}] }` from both
+`searchProject` and `searchGlobal`. Emission is best-effort (a failed notify
+never breaks the caller) and payloads over ~7.6 kB collapse to the envelope.
+The viewer's `/api/events` SSE endpoint tails this channel, so activity from
+any process sharing the database shows up live in the mesh.
 
 ---
 
@@ -650,8 +663,9 @@ commands). There is **no `vindex` bin** and no legacy multi-step commands.
   `all:` query prefix searches across projects, merged + reranked.
 - `vectors ls [name] [--json]` — list projects with doc/chunk counts (`*` =
   active); with a name, print that project's config + stats.
-- `vectors viewer [name] [outPath] [--serve]` — write the static all-projects
-  offline viewer (default), or run the live HTTP viewer with `--serve`.
+- `vectors viewer [name] [outPath] [--serve] [--all]` — write the static
+  all-projects offline viewer (default), or run the live HTTP viewer with
+  `--serve` (`--all` serves the `*` all-projects scope by default).
 - `vectors daemon <start|stop|status|logs>` — `start` installs + launches the
   service (launchd/systemd); `stop` removes it. (Hidden: `daemon run`, the service
   entry point.)
@@ -715,33 +729,56 @@ ancestor with a `.vindex`/`.git` marker (basename) → `$VINDEX_DEFAULT`.
 3D "synapse" navigator. `runViewer(project, port)` serves `assets/viewer.html`
 on `127.0.0.1` plus a JSON API (`node:http`, runs under Bun). PCA via `ml-pca`.
 
+Every `/api` route accepts `?project=<name>`; the special name **`*`
+(`ALL_SCOPE`)** selects the **all-projects scope**: one PCA cluster per project
+(projects may live in different embedding spaces, so a single global PCA is
+impossible), cluster centers laid out on a golden-angle spiral, search fanned
+out via `searchGlobal`, and node/doc lookups resolving their owning project
+automatically. Per-project PCA state is retained (keyed by project) so search
+hits and relations always project into the right cluster.
+
 - `GET /` — the viewer page.
 - `GET /api/status` — `{ name, doc_count (chunks, kept for old baked payloads),
   documents, chunks, embedded, embed_model, state }` (`state` = `ready` or
-  `embedding X/Y`).
+  `embedding X/Y`). The `*` scope aggregates across projects and adds
+  `projects` (count).
 - `GET /api/inventory?limit=&offset=` — full data inventory:
   `{ project: { name, embed_model, documents, chunks, embedded, state, sources,
   docs, docs_total, offset, limit }, global }`. `sources` is the project's
   `SourceConfig[]`, `docs` a paginated document listing (`limit` 1–500, default
   200) with per-document chunk counts, `global` the `listProjects()` summaries.
-- `GET /api/doc?id=…` — one document's chunk listing (inventory drill-down
-  leaf): `{ id, rel_path, title, chunks: [{ id, ordinal, title, unit_type,
-  token_count, embedded }] }`.
+  In the `*` scope, sources and docs are merged across every project and tagged
+  with a `project` field.
+- `GET /api/doc?id=…[&full=1]` — one document's chunk listing (inventory
+  drill-down leaf): `{ id, rel_path, title, project, chunks: [{ id, ordinal,
+  title, unit_type, token_count, embedded }] }`. With `full=1` the response
+  additionally carries `content` (the whole stored file) and `references` (the
+  union of the document's chunks' references), powering the viewer's
+  full-document overlay.
 - `GET /api/node?id=…` — full chunk detail for the side panel: `{ id, title,
-  source (rel_path), source_id, chunk (ordinal), unit_type, url, text, symbol,
-  char_count, references, relations, document }`. `references` come from
-  `link`→`reference` rows, `document` lists ordinal-ordered siblings (with
-  `self` + `graph_index` when sampled), `relations` are the top-6 cosine
-  neighbours within the currently sampled graph (empty until `/api/graph` ran).
+  source (rel_path), source_id, chunk (ordinal), unit_type, url, project,
+  document_id, text, symbol, char_count, references, relations, document }`.
+  `references` come from `link`→`reference` rows, `document` lists
+  ordinal-ordered siblings (with `self` + `graph_index` when sampled),
+  `relations` are the top-6 cosine neighbours within the chunk's project
+  cluster (empty until `/api/graph` ran).
 - `GET /api/graph?n=400&k=3` — sample up to `n` embedded chunks (`n` 50–1200),
   PCA(3) project their real embeddings into a `~[-6,6]` box, and build `k` (1–6)
   nearest-neighbour synapse links by cosine. Returns `{ nodes, links, k }`; nodes
-  carry `{ id, title, source, url, chunk, unit_type, snippet, p:[x,y,z] }`. The
-  fitted PCA is retained so search hits land in the same space.
-- `GET /api/search?q=…` — reranked `searchProject` (topk 8); hits already in the
-  sampled graph carry a `graph_index`, otherwise PCA coords `p` + nearest
-  `attach` links. Each entry carries `score`, optional `rerank_score`, and
+  carry `{ id, title, source, url, chunk, unit_type, project, snippet,
+  p:[x,y,z] }`. In the `*` scope each project is its own `radius≈3` cluster
+  offset on the spiral, links stay within clusters, and the response adds
+  `projects: [{ name, center, count }]`.
+- `GET /api/search?q=…` — reranked search (topk 8, or `searchGlobal` topk 10 in
+  the `*` scope); hits already in the sampled graph carry a `graph_index`,
+  otherwise PCA coords `p` + nearest `attach` links within their own project's
+  cluster. Each entry carries `project`, `score`, optional `rerank_score`, and
   `signals` (`dense`/`sparse`).
+- `GET /api/events` — server-sent events. One dedicated pooled client LISTENs
+  on `vindex_events` and every NOTIFY payload is fanned out verbatim as a
+  `data:` frame (plus an initial `hello` and `: ping` heartbeats every 25 s), so
+  searches and ingests from any process sharing the database appear in the
+  viewer in real time.
 
 Interaction semantics in the viewer page:
 
@@ -758,7 +795,21 @@ Interaction semantics in the viewer page:
   listing the project's sources and documents (expandable to per-chunk rows via
   `/api/doc`; chunk rows focus the graph node or load its detail) plus all
   projects globally; clicking a project switches the viewer to it. Static
-  exports show the global list only.
+  exports show the global list only. Every document row (and the detail panel's
+  document section) carries a `⤢` opener for the **full-document overlay**
+  (`/api/doc?full=1`): the whole file content with search-token highlighting,
+  plus the document's aggregated references.
+- **All-projects scope** — the project picker offers `⁂ all projects`
+  (`?project=*`): each project renders inside a subtle translucent container
+  shell (BackSide sphere + faint wireframe, hue derived deterministically from
+  the project name) with a floating label sprite; fog thins and the camera pulls
+  back to frame the whole constellation.
+- **Live activity** — the page subscribes to `/api/events`; searches and
+  ingests from anywhere land in a bottom-right activity feed (colored by
+  project, fading after ~9 s). Search hits present in the sampled graph pulse
+  with the staggered pop cascade; an ingest flashes its project's container
+  shell and raises a `↻ data changed — refresh` chip that reloads graph +
+  status + inventory. The viewer's own searches are deduped from the echo.
 
 `vectors viewer export [out]` (`make_demo.ts`) writes a standalone
 `docs/viewer-demo.html` by injecting `window.VINDEX_DEMO=true` into the canonical

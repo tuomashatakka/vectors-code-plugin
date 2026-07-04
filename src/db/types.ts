@@ -36,6 +36,9 @@ export interface SourceConfig {
   path:      string;
   globs:     string[];
   base_url?: string | null;
+
+  /** Ingest files git would ignore (default false: .gitignored files are skipped). */
+  include_ignored?: boolean;
 }
 
 /** A row of the `project` table, joined with its embedding space. */

@@ -137,8 +137,45 @@
     color:var(--accent); border-radius:2px; padding:6px; cursor:pointer; font:inherit; font-size:10.5px; }
   #inventory .more:hover { background:var(--accent); color:var(--bg); border-color:var(--accent); }
   #datatoggle { display:block; }
+  #stale { display:none; color:var(--hot); }
 
-  @media (max-width:640px){ #legend,#hint{display:none} #detail,#inventory{width:86vw} }
+  .sec h2 .open { margin-left:auto; color:var(--accent); cursor:pointer;
+    letter-spacing:0; text-transform:none; font-weight:500; }
+  .sec h2 .open:hover { text-decoration:underline; }
+  .row .op { flex:none; color:var(--faint); cursor:pointer; padding:0 3px; font-size:11px; }
+  .row .op:hover { color:var(--accent); }
+
+  #feed { position:fixed; right:16px; bottom:56px; z-index:12; display:flex;
+    flex-direction:column-reverse; gap:6px; align-items:flex-end; pointer-events:none;
+    max-width:46ch; }
+  #feed .ev { background:var(--panel); border:1px solid var(--line-2);
+    border-left:2px solid var(--accent); border-radius:var(--r); padding:6px 10px;
+    font-size:10.5px; color:var(--dim); opacity:0; transform:translateY(4px);
+    transition:opacity .25s, transform .25s; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; max-width:100%; }
+  #feed .ev.in { opacity:1; transform:none; }
+  #feed .ev.out { opacity:0; }
+  #feed .ev b { color:var(--fg); font-weight:600; }
+
+  #docview { position:fixed; inset:0; z-index:40; display:none; align-items:center;
+    justify-content:center; background:rgba(4,5,7,.86); backdrop-filter:blur(4px); }
+  #docview.show { display:flex; }
+  #docview .card { width:min(96ch,92vw); max-height:86vh; display:flex;
+    flex-direction:column; background:var(--panel); border:1px solid var(--line-2);
+    border-radius:var(--r); overflow:hidden; }
+  #docview .head { padding:12px 16px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  #docview .head .ttl { font-weight:600; word-break:break-all; }
+  #docview .head .x { margin-left:auto; cursor:pointer; color:var(--dim);
+    border:1px solid var(--line-2); border-radius:2px; padding:1px 8px; flex:none; }
+  #docview .head .x:hover { color:var(--fg); border-color:var(--accent); }
+  #docview .bd { padding:14px 16px; overflow:auto; }
+  #docview .bd::-webkit-scrollbar { width:4px; }
+  #docview .bd::-webkit-scrollbar-thumb { background:var(--line-2); border-radius:2px; }
+  #docview pre.full { white-space:pre-wrap; word-break:break-word; color:#b8bcc8;
+    font-size:11.5px; line-height:1.6; }
+
+  @media (max-width:640px){ #legend,#hint,#feed{display:none} #detail,#inventory{width:86vw} }
 </style>
 </head>
 <body>
@@ -149,6 +186,7 @@
   <div class="meta" id="meta">loading…</div>
   <div class="switch" id="switch">▾ switch project</div>
   <div class="switch" id="datatoggle">▸ data</div>
+  <div class="switch" id="stale">↻ data changed — refresh</div>
 </aside>
 
 <div id="searchbar" class="panel">
@@ -182,6 +220,17 @@
 
 <div id="picker"><div class="card"><h2>choose a project</h2><div id="picker-list"></div></div></div>
 
+<div id="feed"></div>
+
+<div id="docview"><div class="card">
+  <div class="head">
+    <span class="ttl" id="dv-title"></span>
+    <span class="badges" id="dv-badges"></span>
+    <span class="x" id="dv-close">esc</span>
+  </div>
+  <div class="bd" id="dv-body"></div>
+</div></div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
 "use strict";
@@ -195,6 +244,11 @@ const UNIT_COLORS = {
 };
 const HOT = '#e0556a';
 const colorOf = ut => UNIT_COLORS[ut] ?? UNIT_COLORS[''];
+
+// deterministic per-project hue (containers, labels, activity feed)
+function projColor(name){ let h=0; const s=String(name||'');
+  for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0;
+  return 'hsl('+(h%360)+',52%,60%)'; }
 
 // ---- renderer / scene ----------------------------------------------------
 const renderer = new THREE.WebGLRenderer({canvas:cv, antialias:true, alpha:false});
@@ -264,15 +318,73 @@ cv.addEventListener('pointermove', e=>{ if(!drag) return;
   phiTarget = Math.max(0.18, Math.min(2.96, phiTarget-(e.clientY-py)*0.005));
   px=e.clientX; py=e.clientY; });
 cv.addEventListener('wheel', e=>{ e.preventDefault();
-  rTarget = Math.max(3.5, Math.min(70, rTarget*(1+Math.sign(e.deltaY)*0.09))); }, {passive:false});
+  rTarget = Math.max(3.5, Math.min(90, rTarget*(1+Math.sign(e.deltaY)*0.09))); }, {passive:false});
 
 // ---- graph state ---------------------------------------------------------
 let nodes=[], pts=null, lines=null, focusLines=null, focus=-1, adjacency={}, idById={};
 let aPos, aCol, aSize, aAlpha, sizeT, alphaT, popV, baseCol, hitSet=null, hitWeights=null;
 let MODE='server', AUTOSPIN=false;
+let containers=[], containerByProj={};
 const _c = new THREE.Color();
 
 function disposeMesh(m){ if(m){ scene.remove(m); m.geometry.dispose(); } }
+
+// ---- per-project container meshes (all-projects scope) --------------------
+function labelSprite(text, color){
+  const fs=26, pad=10;
+  const meas=document.createElement('canvas').getContext('2d');
+  meas.font='600 '+fs+'px ui-monospace,Menlo,monospace';
+  const w=Math.ceil(meas.measureText(text).width)+pad*2, h=fs+pad*2;
+  const cvs=document.createElement('canvas'); cvs.width=w*2; cvs.height=h*2;
+  const g=cvs.getContext('2d'); g.scale(2,2);
+  g.font='600 '+fs+'px ui-monospace,Menlo,monospace';
+  g.fillStyle=color; g.textBaseline='middle'; g.fillText(text,pad,h/2);
+  const t=new THREE.CanvasTexture(cvs); t.needsUpdate=true;
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({
+    map:t, transparent:true, opacity:0.5, depthWrite:false }));
+  sp.scale.set(w/26, h/26, 1);
+  return sp;
+}
+function disposeContainers(){
+  containers.forEach(c=>{
+    scene.remove(c.mesh); scene.remove(c.wire); scene.remove(c.label);
+    c.mesh.geometry.dispose(); c.mesh.material.dispose();
+    c.wire.geometry.dispose(); c.wire.material.dispose();
+    c.label.material.map.dispose(); c.label.material.dispose();
+  });
+  containers=[]; containerByProj={};
+}
+// One subtle translucent shell + wireframe + label per project cluster; only
+//  drawn when the graph spans more than one project (the ⁂ all scope).
+function buildContainers(){
+  disposeContainers();
+  const groups={};
+  nodes.forEach((n,i)=>{ if(n.project) (groups[n.project]=groups[n.project]||[]).push(i); });
+  const names=Object.keys(groups);
+  if(names.length<2) return;
+  names.forEach(name=>{
+    const idx=groups[name], c=[0,0,0];
+    idx.forEach(i=>{ c[0]+=nodes[i].p[0]; c[1]+=nodes[i].p[1]; c[2]+=nodes[i].p[2]; });
+    c[0]/=idx.length; c[1]/=idx.length; c[2]/=idx.length;
+    let r=0; idx.forEach(i=>{ const p=nodes[i].p;
+      r=Math.max(r, Math.hypot(p[0]-c[0],p[1]-c[1],p[2]-c[2])); });
+    r=Math.max(r+0.9, 1.6);
+    const col=new THREE.Color(projColor(name));
+    const mesh=new THREE.Mesh(new THREE.SphereGeometry(r, 28, 18),
+      new THREE.MeshBasicMaterial({color:col, transparent:true, opacity:0.045,
+        side:THREE.BackSide, depthWrite:false}));
+    const wire=new THREE.Mesh(new THREE.SphereGeometry(r, 18, 12),
+      new THREE.MeshBasicMaterial({color:col, wireframe:true, transparent:true,
+        opacity:0.05, depthWrite:false, blending:THREE.AdditiveBlending}));
+    mesh.position.set(...c); wire.position.set(...c);
+    const label=labelSprite(name, projColor(name));
+    label.position.set(c[0], c[1]+r+0.9, c[2]);
+    scene.add(mesh); scene.add(wire); scene.add(label);
+    const entry={name, mesh, wire, label, flash:0};
+    containers.push(entry); containerByProj[name]=entry;
+  });
+}
+function flashProject(name){ const c=containerByProj[name]; if(c) c.flash=1; }
 
 function renderGraph(g){
   disposeMesh(pts); disposeMesh(lines); disposeMesh(focusLines);
@@ -323,6 +435,12 @@ function renderGraph(g){
     {color:HOT, transparent:true, opacity:0.9, depthWrite:false,
      blending:THREE.AdditiveBlending}));
   focusLines.visible=false; focusLines.frustumCulled=false; scene.add(focusLines);
+
+  // project containers + wider framing when the cloud spans multiple clusters
+  buildContainers();
+  const ext=nodes.reduce((m,n)=>Math.max(m,Math.abs(n.p[0]),Math.abs(n.p[1]),Math.abs(n.p[2])),1);
+  scene.fog.density = ext>9 ? 0.016 : 0.052;
+  if(ext>9) rTarget=Math.min(84, ext*2.3);
   restyle();
 }
 
@@ -390,6 +508,11 @@ function row(n){
     <span class="lab"><span class="l1">${hl(l1||'')}</span><span class="l2">${esc(sub)}</span></span>
     ${sc}</div>`;
 }
+function refsHtml(list){
+  return `<div class="refs">${list.map(r=>`<div class="ref"><span class="k">${esc(r.kind)}</span>${
+    r.kind==='url'?`<a href="${esc(r.uri)}" target="_blank" rel="noopener">${esc(r.uri)}</a>`
+                  :`<span class="uri">${esc(r.uri)}</span>`}</div>`).join('')}</div>`;
+}
 function renderDetail(d, extra){
   extra=extra||{};
   $('detail').classList.add('show');
@@ -397,6 +520,8 @@ function renderDetail(d, extra){
   // badges
   const b=[];
   b.push(kindBadge(d.unit_type));
+  if(d.project) b.push(`<span class="badge"><span class="dot" style="background:${
+    projColor(d.project)}"></span>${esc(d.project)}</span>`);
   if(d.symbol) b.push(`<span class="badge">◆ ${esc(d.symbol)}</span>`);
   if(d.char_count!=null) b.push(`<span class="badge">${d.char_count} chars</span>`);
   if(extra.rerank_score!=null) b.push(`<span class="badge">rerank ${(+extra.rerank_score).toFixed(2)}</span>`);
@@ -411,25 +536,49 @@ function renderDetail(d, extra){
     <a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a></div></div></div>`);
   if(d.text) S.push(`<div class="sec"><h2>content</h2><pre class="text">${hl(d.text)}</pre></div>`);
   if(d.references&&d.references.length) S.push(`<div class="sec">
-    <h2>references <span class="n">${d.references.length}</span></h2><div class="refs">${
-      d.references.map(r=>`<div class="ref"><span class="k">${esc(r.kind)}</span>${
-        r.kind==='url'?`<a href="${esc(r.uri)}" target="_blank" rel="noopener">${esc(r.uri)}</a>`
-                      :`<span class="uri">${esc(r.uri)}</span>`}</div>`).join('')}</div></div>`);
+    <h2>references <span class="n">${d.references.length}</span></h2>${refsHtml(d.references)}</div>`);
   if(d.relations&&d.relations.length) S.push(`<div class="sec">
     <h2>relations <span class="n">${d.relations.length}</span></h2>${
       d.relations.map(row).join('')}</div>`);
   if(d.document&&d.document.length>1) S.push(`<div class="sec">
-    <h2>document <span class="n">${d.document.length} chunks</span></h2>${
+    <h2>document <span class="n">${d.document.length} chunks</span>${
+      d.document_id?`<span class="open" data-open="${d.document_id}">⤢ open full</span>`:''}</h2>${
       d.document.map(c=>row(Object.assign({}, c))).join('')}</div>`);
   $('d-body').innerHTML=S.join('');
-  // wire clickable rows
+  // wire clickable rows + full-document opener
   $('d-body').querySelectorAll('.row[data-id]').forEach(el=>{
     el.addEventListener('click', ()=>{
       const gi=el.getAttribute('data-gi');
       if(gi!=null) setFocus(+gi); else loadNode(el.getAttribute('data-id'));
     });
   });
+  $('d-body').querySelectorAll('[data-open]').forEach(el=>
+    el.addEventListener('click', e=>{ e.stopPropagation(); openDoc(el.getAttribute('data-open')); }));
 }
+
+// ---- full document overlay -------------------------------------------------
+async function openDoc(id){
+  if(MODE!=='server'||!id) return;
+  try{
+    const d=await (await fetch(API+'/api/doc?id='+encodeURIComponent(id)+'&full=1'+projQ('&'))).json();
+    if(!d||d.error) return;
+    $('dv-title').textContent=d.rel_path||d.title||d.id;
+    $('dv-badges').innerHTML=[
+      d.project?`<span class="badge"><span class="dot" style="background:${
+        projColor(d.project)}"></span>${esc(d.project)}</span>`:'',
+      `<span class="badge">${(d.chunks||[]).length} chunks</span>`,
+      `<span class="badge">${(d.content||'').length} chars</span>`].join('');
+    const S=[];
+    if(d.references&&d.references.length) S.push(`<div class="sec">
+      <h2>references <span class="n">${d.references.length}</span></h2>${refsHtml(d.references)}</div>`);
+    S.push(`<div class="sec"><h2>content</h2><pre class="full">${hl(d.content||'')}</pre></div>`);
+    $('dv-body').innerHTML=S.join('');
+    $('docview').classList.add('show');
+  }catch(_){}
+}
+function closeDoc(){ $('docview').classList.remove('show'); }
+$('dv-close').onclick=closeDoc;
+$('docview').addEventListener('click', e=>{ if(e.target===$('docview')) closeDoc(); });
 
 async function loadNode(id){
   if(MODE!=='server'){ const i=idById[id]; if(i!=null) setFocus(i); return; }
@@ -474,7 +623,9 @@ cv.addEventListener('click', e=>{
 });
 addEventListener('keydown', e=>{
   if(document.activeElement===$('q')) return;
-  if(e.key==='Escape'){ clearFocus(); return; }
+  if(e.key==='Escape'){
+    if($('docview').classList.contains('show')){ closeDoc(); return; }
+    clearFocus(); return; }
   if(e.key==='d'||e.key==='D'){ toggleInventory(); return; }
   const nb=adjacency[focus]||[];
   if(['ArrowRight','ArrowDown'].includes(e.key)&&nb.length) setFocus(nb[(nb._i=((nb._i||0)+1)%nb.length)]);
@@ -503,6 +654,7 @@ function staticSearch(q){
 async function runSearch(){
   const q=$('q').value.trim(); if(!q) return;
   lastTokens=tokensOf(q);
+  lastLocalSearch={q, t:performance.now()};
   $('searchbar').classList.add('busy');
   try{
     const out = MODE==='static' ? staticSearch(q) : await serverSearch(q);
@@ -531,6 +683,45 @@ $('q').addEventListener('keydown',e=>{ if(e.key==='Enter') runSearch(); });
 const popQueue=[];
 function nowS(){ return performance.now()/1000; }
 
+// ---- live activity (SSE over /api/events, fed by pg NOTIFY) ---------------
+let lastLocalSearch={q:'',t:0};
+function addFeed(html, color){
+  const F=$('feed'); if(!F) return;
+  const el=document.createElement('div'); el.className='ev';
+  if(color) el.style.borderLeftColor=color;
+  el.innerHTML=html; F.appendChild(el);
+  requestAnimationFrame(()=>el.classList.add('in'));
+  while(F.children.length>5) F.firstChild.remove();
+  setTimeout(()=>{ el.classList.add('out'); setTimeout(()=>el.remove(), 400); }, 9000);
+}
+function showStale(){ $('stale').style.display='block'; }
+$('stale').onclick=()=>{ $('stale').style.display='none'; loadStatus(); loadGraph();
+  if($('inventory').classList.contains('show')){ INV=null; loadInventory(); } };
+function handleEvent(e){
+  if(!e||e.type==='hello') return;
+  const inScope = PROJECT==='*'||!e.project||e.project==='*'||e.project===PROJECT;
+  const col = e.project&&e.project!=='*' ? projColor(e.project) : null;
+  if(e.type==='search'){
+    // the viewer's own searches already animate locally — skip the echo
+    if(e.query===lastLocalSearch.q && (performance.now()-lastLocalSearch.t)<5000) return;
+    addFeed(`⌕ <b>${esc(e.project||'?')}</b> · ${esc(e.query||'')} · ${(e.hits||[]).length} hits`, col);
+    if(inScope&&e.hits){ let k=0; e.hits.forEach(h=>{ const i=idById[h.id];
+      if(i!=null) popQueue.push({i, at:nowS()+(k++)*0.05}); }); }
+  } else if(e.type==='ingest'){
+    addFeed(`+ <b>${esc(e.project||'?')}</b> · ${esc(e.file||'')} · ${e.chunks||0} chunks`, col);
+    if(inScope){ flashProject(e.project); showStale(); }
+  } else if(e.type==='ingest_done'&&e.filesChanged>0){
+    addFeed(`✓ <b>${esc(e.project||'?')}</b> · ${e.filesChanged} files · ${e.chunks} chunks indexed`, col);
+    if(inScope) showStale();
+  }
+}
+function connectEvents(){
+  if(MODE!=='server'||typeof EventSource==='undefined') return;
+  const es=new EventSource(API+'/api/events');
+  es.onmessage=m=>{ try{ handleEvent(JSON.parse(m.data)); }catch(_){} };
+  // EventSource reconnects on its own; nothing to do on error
+}
+
 // ---- frame loop ----------------------------------------------------------
 const EASE=0.12;
 function frame(){
@@ -556,6 +747,12 @@ function frame(){
     pts.geometry.attributes.aSize.needsUpdate=true;
     pts.geometry.attributes.aAlpha.needsUpdate=true;
   }
+  // project containers glow briefly when their project ingests
+  for(const c of containers){
+    if(c.flash>0.003){ c.flash*=0.94;
+      c.mesh.material.opacity=0.045+c.flash*0.20;
+      c.wire.material.opacity=0.05+c.flash*0.28; }
+  }
   // focus halo follows + pulses
   if(focus>=0&&nodes[focus]){
     halo.position.set(...nodes[focus].p);
@@ -567,7 +764,8 @@ function frame(){
 
 // ---- meta + legend -------------------------------------------------------
 function setMeta(s){ $('meta').innerHTML=
-  `<b>${s.name}</b> · ${s.documents!=null?s.documents+' docs · ':''}${s.doc_count} chunks<br>${s.embed_model} · ${s.state}`; }
+  `<b>${s.name}</b> · ${s.projects!=null?s.projects+' projects · ':''}${
+    s.documents!=null?s.documents+' docs · ':''}${s.doc_count} chunks<br>${s.embed_model} · ${s.state}`; }
 function buildLegend(){
   $('legend').innerHTML=Object.entries({section:'section',symbol:'symbol',
     definition:'definition',code:'code',text:'text'}).map(([k,l])=>
@@ -584,14 +782,24 @@ async function loadGraph(){ renderGraph(await (await fetch(API+'/api/graph?n=600
 
 // ---- project picker ------------------------------------------------------
 function showPicker(){ const L=$('picker-list');
-  L.innerHTML=PROJECTS.length ? PROJECTS.map((p,i)=>`<div class="pj" data-i="${i}">`+
+  const allRow = PMODE==='server'
+    ? `<div class="pj" data-i="-1"><span class="nm">⁂ all projects</span>`+
+      `<span class="st">every index, one mesh</span></div>` : '';
+  L.innerHTML=PROJECTS.length ? allRow+PROJECTS.map((p,i)=>`<div class="pj" data-i="${i}">`+
     `<span class="nm">${esc(p.name)}</span>`+
     `<span class="st">${(p.status?p.status.doc_count:p.chunks)||0} chunks</span></div>`).join('')
     : '<div class="st">no projects — run <b>vectors index &lt;name&gt;</b></div>';
   L.querySelectorAll('.pj').forEach(el=>el.addEventListener('click',()=>chooseProject(+el.getAttribute('data-i'))));
   $('picker').classList.add('show'); }
 function hidePicker(){ $('picker').classList.remove('show'); }
-function chooseProject(i){ const p=PROJECTS[i]; if(!p) return; hidePicker(); INV=null;
+function chooseProject(i){
+  if(i===-1){ // the ⁂ all-projects scope (server mode only)
+    hidePicker(); INV=null; PROJECT='*';
+    history.replaceState(null,'','?project=*');
+    loadStatus(); loadGraph();
+    if($('inventory').classList.contains('show')) loadInventory();
+    $('switch').textContent='▾ ⁂ all projects'; return; }
+  const p=PROJECTS[i]; if(!p) return; hidePicker(); INV=null;
   if(PMODE==='static'){ bootFromData({status:p.status, graph:p.graph}); }
   else { PROJECT=p.name; history.replaceState(null,'','?project='+encodeURIComponent(p.name)); loadStatus(); loadGraph(); }
   if($('inventory').classList.contains('show')) loadInventory();
@@ -603,7 +811,8 @@ async function initServerProjects(){ try{
     const r=await (await fetch(API+'/api/projects')).json();
     PROJECTS=r.projects||r||[]; PMODE='server';
     if(!PROJECT && r.active) PROJECT=r.active;
-    if(PROJECTS.length>1){ $('switch').style.display='block'; $('switch').onclick=showPicker; }
+    if(PROJECT==='*') $('switch').textContent='▾ ⁂ all projects';
+    $('switch').style.display='block'; $('switch').onclick=showPicker;
   }catch(_){ } }
 
 // ---- data inventory ------------------------------------------------------
@@ -635,14 +844,15 @@ function renderInventory(inv){
   const S=[];
   if(P.sources&&P.sources.length) S.push(`<div class="sec"><h2>sources <span class="n">${P.sources.length}</span></h2>${
     P.sources.map(s=>`<div class="row" style="cursor:default">
-      <span class="dot" style="background:${UNIT_COLORS.section}"></span>
-      <span class="lab"><span class="l1">${esc(s.id)} · ${esc(s.type)}</span><span class="l2">${
+      <span class="dot" style="background:${s.project?projColor(s.project):UNIT_COLORS.section}"></span>
+      <span class="lab"><span class="l1">${s.project?esc(s.project)+' · ':''}${esc(s.id)} · ${esc(s.type)}</span><span class="l2">${
         esc(s.path)}${s.globs&&s.globs.length?(' · '+esc(s.globs.join(' '))):''}</span></span></div>`).join('')}</div>`);
   S.push(`<div class="sec"><h2>documents <span class="n">${P.docs_total}</span></h2>${
     P.docs.map(d=>`<div class="row doc" data-doc="${d.id}">
-      <span class="dot" style="background:${UNIT_COLORS.text}"></span>
+      <span class="dot" style="background:${d.project?projColor(d.project):UNIT_COLORS.text}"></span>
       <span class="lab"><span class="l1">${esc(d.rel_path||d.title||d.id)}</span><span class="l2">${
-        esc(d.title||'')}${d.title?' · ':''}${d.chunks} chunks</span></span></div>
+        d.project?esc(d.project)+' · ':''}${esc(d.title||'')}${d.title?' · ':''}${d.chunks} chunks</span></span>
+      <span class="op" data-open="${d.id}" title="open full document">⤢</span></div>
       <div class="kids" data-kids="${d.id}"></div>`).join('')}${
     P.docs.length<P.docs_total?`<button class="more" id="i-more">load more (${P.docs.length}/${P.docs_total})</button>`:''}</div>`);
   S.push(globalSection(inv.global||[]));
@@ -659,6 +869,8 @@ function globalSection(list){
 function wireInventory(){
   $('i-body').querySelectorAll('.row.doc').forEach(el=>
     el.addEventListener('click',()=>expandDoc(el.getAttribute('data-doc'))));
+  $('i-body').querySelectorAll('.op[data-open]').forEach(el=>
+    el.addEventListener('click',e=>{ e.stopPropagation(); openDoc(el.getAttribute('data-open')); }));
   $('i-body').querySelectorAll('.row.proj').forEach(el=>
     el.addEventListener('click',()=>{
       const i=PROJECTS.findIndex(p=>p.name===el.getAttribute('data-p'));
@@ -727,7 +939,7 @@ buildLegend(); frame();
 if(window.VINDEX_PROJECTS && window.VINDEX_PROJECTS.length){ initStaticProjects(window.VINDEX_PROJECTS); }
 else if(window.VINDEX_DATA){ bootFromData(window.VINDEX_DATA); }
 else if(window.VINDEX_DEMO || location.protocol==='file:'){ AUTOSPIN=true; bootFromData(makeDemoData()); }
-else { initServerProjects(); loadStatus(); loadGraph(); }
+else { initServerProjects(); loadStatus(); loadGraph(); connectEvents(); }
 </script>
 </body>
 </html>

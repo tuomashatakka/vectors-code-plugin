@@ -5,31 +5,49 @@
  *   GET /                       the viewer page
  *   GET /api/status             live index status (name, documents, chunks, ...)
  *   GET /api/inventory          data inventory: sources + paginated documents + global projects
- *   GET /api/doc?id=...         one document's chunk listing (inventory drill-down leaf)
+ *   GET /api/doc?id=...         one document's chunk listing (add &full=1 for the
+ *                               whole file content + aggregated references)
  *   GET /api/node?id=...        full chunk detail: text, references, siblings, PCA relations
  *   GET /api/graph?n=400&k=3    sampled chunks + knn synapse links; positions
  *                               are a PCA(3) projection of the real embeddings
  *   GET /api/search?q=...       reranked search; hits carry a graph_index when
  *                               already sampled, else PCA coords + attach links
+ *   GET /api/events             server-sent events tailing the Postgres
+ *                               `vindex_events` channel (live searches/ingests)
+ *
+ * Every /api route accepts `?project=<name>`; the special name `*` switches to
+ * the all-projects scope: the graph becomes one PCA cluster per project (see
+ * graph.ts), search fans out globally, and node/doc lookups resolve their
+ * owning project automatically.
  *
  * Built on node:http (runs under Bun). PCA via the ml-pca package.
  */
 import { createServer } from 'node:http'
+import type { ServerResponse } from 'node:http'
 import { VIEWER_PORT } from '../config.ts'
 import { readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PCA } from 'ml-pca'
 
-import { q, q1, toVector } from '../db/pool.ts'
-import { getProject, getSources, listProjects } from '../db/projects.ts'
-import { searchProject } from '../search/search.ts'
+import { getPool, q, q1 } from '../db/pool.ts'
+import { EVENT_CHANNEL } from '../db/notify.ts'
+import { getSources, listProjects } from '../db/projects.ts'
+import { searchGlobal, searchProject } from '../search/search.ts'
+import { buildGraph, buildGraphAll, dot, graphState, parseVector, projectVec, resolveCtx, round4 } from './graph.ts'
+import type { ProjectCtx } from './graph.ts'
 import type { SourceConfig } from '../db/types.ts'
 import type { ProjectSummary } from '../db/projects.ts'
 
 
+export { buildGraph, buildGraphAll, resolveCtx } from './graph.ts'
+export type { GraphResult, ProjectCtx } from './graph.ts'
+
+
 const HERE = dirname(fileURLToPath(import.meta.url))
+
+/** The pseudo project name selecting the all-projects scope. */
+export const ALL_SCOPE = '*'
 
 /** Locate viewer.html relative to this module, falling back to the skill path. */
 function viewerHtmlPath (): string {
@@ -43,187 +61,6 @@ function viewerHtmlPath (): string {
   throw new Error('viewer.html not found in assets/')
 }
 
-export interface ProjectCtx {
-  id:         string;
-  name:       string;
-  embedModel: string;
-  embTable:   string;
-}
-
-interface GraphNode {
-  id:        string;
-  title:     string;
-  source:    string;
-  source_id: string;
-  url:       string | null;
-  chunk:     number;
-  unit_type: string;
-  snippet:   string;
-  p:         [number, number, number];
-}
-
-// Fitted PCA state retained between /api/graph and /api/search so search hits
-//  can be projected into the same 3D space the graph was laid out in.
-interface GraphState {
-  idToIdx: Map<string, number>;
-  vecs:    number[][];
-  pca:     PCA | null;
-  scale:   number;
-}
-
-const graphState: GraphState = { idToIdx: new Map(), vecs: [], pca: null, scale: 1 }
-
-export async function resolveCtx (projectName: string): Promise<ProjectCtx> {
-  const proj = await getProject(projectName)
-  if (!proj)
-    throw new Error(`project not found: ${projectName}`)
-
-  const space = await q1<{ table_name: string }>(
-    'SELECT table_name FROM embedding_space WHERE id = $1',
-    [ proj.space_id ],
-  )
-  if (!space)
-    throw new Error(`embedding space not found for project ${projectName}`)
-  return { id: proj.id, name: proj.name, embedModel: proj.embed_model, embTable: space.table_name }
-}
-
-interface ChunkRow {
-  id:        string;
-  title:     string | null;
-  text:      string | null;
-  url:       string | null;
-  unit_type: string | null;
-  ordinal:   number | null;
-  embedding: string;
-}
-
-/** Sample up to n embedded chunks at random across the index. */
-async function sampleChunks (ctx: ProjectCtx, n: number): Promise<ChunkRow[]> {
-  return q<ChunkRow>(
-    `SELECT c.id, c.title, c.text, c.url, c.unit_type, c.ordinal, e.embedding
-     FROM chunk c
-     JOIN ${ctx.embTable} e ON e.embedding_id = c.embedding_id
-     WHERE c.project_id = $1 AND c.embedding_id IS NOT NULL
-     ORDER BY random()
-     LIMIT $2`,
-    [ ctx.id, n ],
-  )
-}
-
-/** Parse a pgvector text literal "[a,b,c]" into a number[]. */
-function parseVector (v: string | number[]): number[] {
-  if (Array.isArray(v))
-    return v as number[]
-  return v.replace(/^\[|\]$/g, '').split(',')
-    .map(Number)
-}
-
-function dot (a: number[], b: number[]): number {
-  let s = 0
-  for (let i = 0; i < a.length; i++)
-    s += a[i]! * b[i]!
-  return s
-}
-
-function snippet (text: string | null, len = 240): string {
-  return (text ?? '').split(/\s+/).filter(Boolean)
-    .join(' ')
-    .slice(0, len)
-}
-
-export interface GraphResult {
-  nodes: GraphNode[];
-  links: [number, number, number][];
-  k:     number;
-}
-
-// Build the sampled graph: PCA(3) positions + knn synapse links. Mirrors
-//  build_graph() in viewer_server.py (numpy SVD -> ml-pca SVD here).
-export async function buildGraph (ctx: ProjectCtx, n: number, k: number): Promise<GraphResult> {
-  const rows = await sampleChunks(ctx, n)
-  const vecs = rows.map(r => parseVector(r.embedding))
-  if (vecs.length === 0) {
-    graphState.idToIdx = new Map()
-    graphState.vecs    = []
-    graphState.pca     = null
-    graphState.scale   = 1
-    return { nodes: [], links: [], k }
-  }
-
-  // PCA to 3 components (centered by default, matching the numpy mean-subtract).
-  const pca  = new PCA(vecs, { method: 'SVD', center: true, scale: false })
-  const proj = pca.predict(vecs, { nComponents: 3 }).to2DArray()
-
-  // Normalise the cloud into a ~[-6,6] box (matches scale = 6 / max|pos|).
-  let maxAbs = 1e-6
-  for (const row of proj)
-    for (const x of row)
-      maxAbs = Math.max(maxAbs, Math.abs(x))
-
-  const scale = 6.0 / maxAbs
-
-  // k nearest neighbours by cosine/inner-product similarity (vectors are unit-norm).
-  const N                                 = vecs.length
-  const links: [number, number, number][] = []
-  const seen                              = new Set<string>()
-  const kk                                = Math.min(k, N - 1)
-  for (let i = 0; i < N; i++) {
-    const sims: [number, number][] = []
-    for (let j = 0; j < N; j++) {
-      if (i === j)
-        continue
-      sims.push([ dot(vecs[i]!, vecs[j]!), j ])
-    }
-    sims.sort((a, b) => b[0] - a[0])
-    for (let m = 0; m < kk; m++) {
-      const j   = sims[m]![1]
-      const a   = Math.min(i, j)
-      const b   = Math.max(i, j)
-      const key = `${a}-${b}`
-      if (!seen.has(key)) {
-        seen.add(key)
-        links.push([ a, b, Math.round(sims[m]![0] * 1e4) / 1e4 ])
-      }
-    }
-  }
-
-  const nodes: GraphNode[] = rows.map((r, i) => ({
-    id:        r.id,
-    title:     r.title ?? '',
-    source:    r.title ?? '',
-    source_id: '',
-    url:       r.url ?? null,
-    chunk:     r.ordinal ?? 0,
-    unit_type: r.unit_type ?? '',
-    snippet:   snippet(r.text),
-    p:         [
-      Math.round(proj[i]![0]! * scale * 1e4) / 1e4,
-      Math.round(proj[i]![1]! * scale * 1e4) / 1e4,
-      Math.round(proj[i]![2]! * scale * 1e4) / 1e4,
-    ],
-  }))
-
-  graphState.idToIdx = new Map(rows.map((r, i) => [ r.id, i ]))
-  graphState.vecs    = vecs
-  graphState.pca     = pca
-  graphState.scale   = scale
-
-  return { nodes, links, k }
-}
-
-/** Project a single vector into the current graph's PCA space. */
-function projectVec (vec: number[]): [number, number, number] {
-  if (!graphState.pca)
-    return [ 0, 0, 0 ]
-
-  const row = graphState.pca.predict([ vec ], { nComponents: 3 }).to2DArray()[0]!
-  return [
-    Math.round(row[0]! * graphState.scale * 1e4) / 1e4,
-    Math.round(row[1]! * graphState.scale * 1e4) / 1e4,
-    Math.round(row[2]! * graphState.scale * 1e4) / 1e4,
-  ]
-}
-
 interface SearchEntry {
   id:            string;
   title:         string | null;
@@ -231,6 +68,7 @@ interface SearchEntry {
   url:           string | null;
   chunk:         number;
   unit_type:     string | null;
+  project:       string;
   score:         number;
   rerank_score?: number;
   signals?:      string[];
@@ -239,23 +77,51 @@ interface SearchEntry {
   attach?:       [number, number][];
 }
 
-// Run searchProject and shape hits for the viewer: splice into the sampled
-//  graph when already present, else carry PCA coords + nearest attach links.
-async function runSearch (ctx: ProjectCtx, query: string): Promise<{ query: string; results: SearchEntry[] }> {
-  const res = await searchProject(query, ctx.name, { topk: 8 })
-  // Fetch embeddings for hits not already in the sampled graph so we can place them.
-  const missing = res.hits.filter(h => !graphState.idToIdx.has(h.chunk_id)).map(h => h.chunk_id)
+interface SearchResponse {
+  query:   string;
+  project: string;
+  results: SearchEntry[];
+}
+
+// Run search (single project or global) and shape hits for the viewer: splice
+//  into the sampled graph when already present, else carry PCA coords + nearest
+//  attach links within the hit's own project cluster.
+async function runSearch (
+  pname: string,
+  ctxFor: (name: string) => Promise<ProjectCtx>,
+  query: string,
+): Promise<SearchResponse> {
+  const res = pname === ALL_SCOPE
+    ? await searchGlobal(query, { topk: 10 })
+    : await searchProject(query, pname, { topk: 8 })
+
+  // Fetch embeddings for hits not already in the sampled graph so we can place
+  //  them — grouped by owning project, since each has its own embedding table.
+  const missingByProject = new Map<string, string[]>()
+  for (const h of res.hits)
+    if (!graphState.idToIdx.has(h.chunk_id)) {
+      const list = missingByProject.get(h.project) ?? []
+      list.push(h.chunk_id)
+      missingByProject.set(h.project, list)
+    }
+
   const vecById = new Map<string, number[]>()
-  if (missing.length) {
-    const rows = await q<{ id: string; embedding: string }>(
-      `SELECT c.id, e.embedding
-       FROM chunk c JOIN ${ctx.embTable} e ON e.embedding_id = c.embedding_id
-       WHERE c.id = ANY($1)`,
-      [ missing ],
-    )
-    for (const r of rows)
-      vecById.set(r.id, parseVector(r.embedding))
-  }
+  for (const [ project, ids ] of missingByProject)
+    try {
+      const ctx  = await ctxFor(project)
+      const rows = await q<{ id: string; embedding: string }>(
+        `SELECT c.id, e.embedding
+         FROM chunk c JOIN ${ctx.embTable} e ON e.embedding_id = c.embedding_id
+         WHERE c.id = ANY($1)`,
+        [ ids ],
+      )
+      for (const r of rows)
+        vecById.set(r.id, parseVector(r.embedding))
+    }
+    catch {
+
+      /* project vanished mid-flight — hits are still listed, just unplaced */
+    }
 
   const results: SearchEntry[] = res.hits.map(h => {
     const entry: SearchEntry = {
@@ -265,6 +131,7 @@ async function runSearch (ctx: ProjectCtx, query: string): Promise<{ query: stri
       url:       h.url,
       chunk:     h.ordinal,
       unit_type: h.unit_type,
+      project:   h.project,
       score:     h.score,
       signals:   [ h.dense > 0 ? 'dense' : '', h.sparse > 0 ? 'sparse' : '' ].filter(Boolean),
     }
@@ -275,19 +142,20 @@ async function runSearch (ctx: ProjectCtx, query: string): Promise<{ query: stri
     if (gi != null)
       entry.graph_index = gi; else {
       const vec = vecById.get(h.chunk_id)
-      if (vec) {
-        entry.p = projectVec(vec)
-        if (graphState.vecs.length) {
-          const sims = graphState.vecs.map((gv, i) => [ dot(gv, vec), i ] as [number, number])
+      const st  = graphState.projects.get(h.project)
+      if (vec && st) {
+        entry.p = projectVec(st, vec)
+        if (st.vecs.length) {
+          const sims = st.vecs.map((gv, i) => [ dot(gv, vec), st.gidx[i]! ] as [number, number])
           sims.sort((a, b) => b[0] - a[0])
-          entry.attach = sims.slice(0, 3).map(([ s, i ]) => [ i, Math.round(s * 1e4) / 1e4 ])
+          entry.attach = sims.slice(0, 3).map(([ s, i ]) => [ i, round4(s) ])
         }
       }
     }
     return entry
   })
 
-  return { query, results }
+  return { query, project: res.project, results }
 }
 
 interface StatusResult {
@@ -298,6 +166,7 @@ interface StatusResult {
   embedded:    number;
   embed_model: string;
   state:       string;
+  projects?:   number;
 }
 
 export async function buildStatus (ctx: ProjectCtx): Promise<StatusResult> {
@@ -321,6 +190,24 @@ export async function buildStatus (ctx: ProjectCtx): Promise<StatusResult> {
   }
 }
 
+/** Aggregate status across every project (the `*` scope). */
+export async function buildStatusAll (): Promise<StatusResult> {
+  const projects = await listProjects()
+  const models   = await q<{ embed_model: string }>('SELECT DISTINCT embed_model FROM project ORDER BY embed_model')
+  const chunks   = projects.reduce((s, p) => s + p.chunks, 0)
+  const embedded = projects.reduce((s, p) => s + p.embedded, 0)
+  return {
+    name:        'all projects',
+    doc_count:   chunks,
+    documents:   projects.reduce((s, p) => s + p.documents, 0),
+    chunks,
+    embedded,
+    embed_model: models.map(m => m.embed_model).join(' · ') || '—',
+    state:       embedded >= chunks ? 'ready' : `embedding ${embedded}/${chunks}`,
+    projects:    projects.length,
+  }
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 interface InventoryDoc {
@@ -331,7 +218,10 @@ interface InventoryDoc {
   url:       string | null;
   mtime:     string | null;
   chunks:    number;
+  project?:  string;
 }
+
+type InventorySource = SourceConfig & { project?: string }
 
 interface InventoryResult {
   project: {
@@ -341,7 +231,7 @@ interface InventoryResult {
     chunks:      number;
     embedded:    number;
     state:       string;
-    sources:     SourceConfig[];
+    sources:     InventorySource[];
     docs:        InventoryDoc[];
     docs_total:  number;
     offset:      number;
@@ -380,37 +270,96 @@ export async function buildInventory (ctx: ProjectCtx, limit: number, offset: nu
   }
 }
 
-interface DocResult {
-  id:       string;
-  rel_path: string | null;
-  title:    string | null;
-  chunks:   { id: string;
-    ordinal:      number;
-    title:        string | null;
-    unit_type:    string | null;
-    token_count:  number | null;
-    embedded:     boolean; }[];
+/** Inventory for the `*` scope: every project's sources + documents, merged. */
+export async function buildInventoryAll (limit: number, offset: number): Promise<InventoryResult> {
+  const status                     = await buildStatusAll()
+  const global                     = await listProjects()
+  const sources: InventorySource[] = []
+  for (const p of global)
+    for (const s of await getSources(p.name))
+      sources.push({ ...s, project: p.name })
+
+  const docs = await q<InventoryDoc>(
+    `SELECT d.id, d.source_id, d.rel_path, d.title, d.url, d.mtime, p.name AS project,
+            (SELECT count(*) FROM chunk c WHERE c.document_id = d.id)::int AS chunks
+     FROM document d JOIN project p ON p.id = d.project_id
+     ORDER BY p.name, d.source_id, d.rel_path
+     LIMIT $1 OFFSET $2`,
+    [ limit, offset ],
+  )
+  return {
+    project: {
+      name:        'all projects',
+      embed_model: status.embed_model,
+      documents:   status.documents,
+      chunks:      status.chunks,
+      embedded:    status.embedded,
+      state:       status.state,
+      sources,
+      docs,
+      docs_total:  status.documents,
+      offset,
+      limit,
+    },
+    global,
+  }
 }
 
-/** One document's chunk listing — the drill-down leaf of the inventory tree. */
-export async function buildDoc (ctx: ProjectCtx, id: string): Promise<DocResult | null> {
+interface DocChunk {
+  id:          string;
+  ordinal:     number;
+  title:       string | null;
+  unit_type:   string | null;
+  token_count: number | null;
+  embedded:    boolean;
+}
+
+interface DocResult {
+  id:          string;
+  rel_path:    string | null;
+  title:       string | null;
+  project?:    string;
+  content?:    string;
+  references?: { kind: string; uri: string }[];
+  chunks:      DocChunk[];
+}
+
+/**
+ * One document's chunk listing — the drill-down leaf of the inventory tree.
+ * With `full`, the whole stored file content plus the union of the chunks'
+ * references is included, so the viewer can show the document in full.
+ */
+export async function buildDoc (ctx: ProjectCtx, id: string, full = false): Promise<DocResult | null> {
   if (!UUID_RE.test(id))
     return null
 
-  const doc = await q1<{ id: string; rel_path: string | null; title: string | null }>(
-    'SELECT id, rel_path, title FROM document WHERE id = $1 AND project_id = $2',
+  const doc = await q1<{ id: string; rel_path: string | null; title: string | null; content: string | null }>(
+    `SELECT id, rel_path, title${full ? ', content' : ', NULL AS content'}
+     FROM document WHERE id = $1 AND project_id = $2`,
     [ id, ctx.id ],
   )
   if (!doc)
     return null
 
-  const chunks = await q<DocResult['chunks'][number]>(
+  const chunks = await q<DocChunk>(
     `SELECT id, ordinal, title, unit_type, token_count,
             (embedding_id IS NOT NULL) AS embedded
      FROM chunk WHERE document_id = $1 ORDER BY ordinal`,
     [ id ],
   )
-  return { ...doc, chunks }
+  const out: DocResult = { id: doc.id, rel_path: doc.rel_path, title: doc.title, project: ctx.name, chunks }
+  if (full) {
+    out.content    = doc.content ?? ''
+    out.references = await q<{ kind: string; uri: string }>(
+      `SELECT DISTINCT r.kind, r.uri
+       FROM link l
+       JOIN reference r ON r.id = l.dst_id
+       JOIN chunk c ON c.id = l.src_id
+       WHERE l.src_kind = 'chunk' AND l.dst_kind = 'reference' AND c.document_id = $1`,
+      [ id ],
+    )
+  }
+  return out
 }
 
 interface NodeRelation {
@@ -423,25 +372,44 @@ interface NodeRelation {
   graph_index?: number;
 }
 
+interface NodeSibling {
+  id:           string;
+  title:        string | null;
+  chunk:        number;
+  unit_type:    string | null;
+  self?:        boolean;
+  graph_index?: number;
+}
+
 interface NodeResult {
-  id:         string;
-  title:      string | null;
-  source:     string;
-  source_id:  string;
-  chunk:      number;
-  unit_type:  string | null;
-  url:        string | null;
-  text:       string;
-  symbol:     string | null;
-  char_count: number;
-  references: { kind: string; uri: string }[];
-  relations:  NodeRelation[];
-  document:   { id: string;
-    title:          string | null;
-    chunk:          number;
-    unit_type:      string | null;
-    self?:          boolean;
-    graph_index?:   number; }[];
+  id:          string;
+  title:       string | null;
+  source:      string;
+  source_id:   string;
+  chunk:       number;
+  unit_type:   string | null;
+  url:         string | null;
+  project:     string;
+  document_id: string;
+  text:        string;
+  symbol:      string | null;
+  char_count:  number;
+  references:  { kind: string; uri: string }[];
+  relations:   NodeRelation[];
+  document:    NodeSibling[];
+}
+
+interface NodeRow {
+  id:          string;
+  title:       string | null;
+  text:        string | null;
+  url:         string | null;
+  ordinal:     number | null;
+  unit_type:   string | null;
+  symbol:      string | null;
+  document_id: string;
+  rel_path:    string | null;
+  source_id:   string | null;
 }
 
 /** Full node detail for the viewer panel: chunk text, references, siblings, PCA relations. */
@@ -449,16 +417,7 @@ export async function buildNode (ctx: ProjectCtx, id: string): Promise<NodeResul
   if (!UUID_RE.test(id))
     return null
 
-  const row = await q1<{ id: string;
-    title:                   string | null;
-    text:                    string | null;
-    url:                     string | null;
-    ordinal:                 number | null;
-    unit_type:               string | null;
-    symbol:                  string | null;
-    document_id:             string;
-    rel_path:                string | null;
-    source_id:               string | null; }>(
+  const row = await q1<NodeRow>(
     `SELECT c.id, c.title, c.text, c.url, c.ordinal, c.unit_type, c.symbol, c.document_id,
             d.rel_path, d.source_id
      FROM chunk c JOIN document d ON d.id = c.document_id
@@ -480,7 +439,7 @@ export async function buildNode (ctx: ProjectCtx, id: string): Promise<NodeResul
     [ row.document_id ],
   )
   const document = siblings.map(s => {
-    const entry: NodeResult['document'][number] = {
+    const entry: NodeSibling = {
       id:        s.id,
       title:     s.title,
       chunk:     s.ordinal ?? 0,
@@ -498,43 +457,49 @@ export async function buildNode (ctx: ProjectCtx, id: string): Promise<NodeResul
   const relations = await nodeRelations(ctx, id)
 
   return {
-    id:         row.id,
-    title:      row.title,
-    source:     row.rel_path ?? '',
-    source_id:  row.source_id ?? '',
-    chunk:      row.ordinal ?? 0,
-    unit_type:  row.unit_type,
-    url:        row.url,
-    text:       row.text ?? '',
-    symbol:     row.symbol,
-    char_count: (row.text ?? '').length,
+    id:          row.id,
+    title:       row.title,
+    source:      row.rel_path ?? '',
+    source_id:   row.source_id ?? '',
+    chunk:       row.ordinal ?? 0,
+    unit_type:   row.unit_type,
+    url:         row.url,
+    project:     ctx.name,
+    document_id: row.document_id,
+    text:        row.text ?? '',
+    symbol:      row.symbol,
+    char_count:  (row.text ?? '').length,
     references,
     relations,
     document,
   }
 }
 
-/** Top cosine neighbours of a chunk within the currently sampled graph. */
+/** Fetch one chunk's embedding vector from its project's embedding table. */
+async function chunkVec (ctx: ProjectCtx, id: string): Promise<number[] | null> {
+  const emb = await q1<{ embedding: string }>(
+    `SELECT e.embedding FROM chunk c
+     JOIN ${ctx.embTable} e ON e.embedding_id = c.embedding_id
+     WHERE c.id = $1`,
+    [ id ],
+  )
+  return emb ? parseVector(emb.embedding) : null
+}
+
+/** Top cosine neighbours of a chunk within its project's sampled cluster. */
 async function nodeRelations (ctx: ProjectCtx, id: string): Promise<NodeRelation[]> {
-  if (!graphState.pca || !graphState.vecs.length)
+  const st = graphState.projects.get(ctx.name)
+  if (!st || !st.vecs.length)
     return []
 
-  const selfIdx = graphState.idToIdx.get(id)
-  let vec       = selfIdx != null ? graphState.vecs[selfIdx] : undefined
-  if (!vec) {
-    const emb = await q1<{ embedding: string }>(
-      `SELECT e.embedding FROM chunk c
-       JOIN ${ctx.embTable} e ON e.embedding_id = c.embedding_id
-       WHERE c.id = $1`,
-      [ id ],
-    )
-    if (!emb)
-      return []
-    vec = parseVector(emb.embedding)
-  }
+  const gi       = graphState.idToIdx.get(id)
+  const localIdx = gi != null ? st.gidx.indexOf(gi) : -1
+  const vec      = localIdx >= 0 ? st.vecs[localIdx]! : await chunkVec(ctx, id)
+  if (!vec)
+    return []
 
-  const sims = graphState.vecs.map((gv, i) => [ dot(gv, vec), i ] as [number, number])
-    .filter(([ , i ]) => i !== selfIdx)
+  const sims = st.vecs.map((gv, i) => [ dot(gv, vec), st.gidx[i]! ] as [number, number])
+    .filter(([ , g ]) => g !== gi)
   sims.sort((a, b) => b[0] - a[0])
 
   const top     = sims.slice(0, 6)
@@ -563,19 +528,94 @@ async function nodeRelations (ctx: ProjectCtx, id: string): Promise<NodeRelation
       source:      m.title ?? '',
       chunk:       m.ordinal ?? 0,
       unit_type:   m.unit_type,
-      score:       Math.round(s * 1e4) / 1e4,
+      score:       round4(s),
       graph_index: i,
     })
   }
   return out
 }
 
+/** Resolve which project owns a chunk (for node lookups in the `*` scope). */
+async function projectOfChunk (id: string): Promise<string | null> {
+  if (!UUID_RE.test(id))
+    return null
+
+  const row = await q1<{ name: string }>(
+    'SELECT p.name FROM chunk c JOIN project p ON p.id = c.project_id WHERE c.id = $1',
+    [ id ],
+  )
+  return row?.name ?? null
+}
+
+/** Resolve which project owns a document (for doc lookups in the `*` scope). */
+async function projectOfDoc (id: string): Promise<string | null> {
+  if (!UUID_RE.test(id))
+    return null
+
+  const row = await q1<{ name: string }>(
+    'SELECT p.name FROM document d JOIN project p ON p.id = d.project_id WHERE d.id = $1',
+    [ id ],
+  )
+  return row?.name ?? null
+}
+
+/** Small helper: run an owner-resolver, returning null instead of throwing. */
+async function ownerOrNull (
+  id: string,
+  resolver: (id: string) => Promise<string | null>,
+): Promise<string | null> {
+  try {
+    return await resolver(id)
+  }
+  catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live events: LISTEN on the vindex_events channel with one dedicated pooled
+//  client, fan the payloads out to every connected SSE response verbatim.
+const sseClients = new Set<ServerResponse>()
+
+let listenerUp = false
+
+async function ensureEventListener (): Promise<void> {
+  if (listenerUp)
+    return
+  listenerUp = true
+
+  try {
+    const client = await getPool().connect()
+    await client.query(`LISTEN ${EVENT_CHANNEL}`)
+    client.on('notification', msg => {
+      const frame = `data: ${msg.payload ?? '{}'}\n\n`
+      for (const res of sseClients)
+        res.write(frame)
+    })
+    client.on('error', () => {
+      listenerUp = false // next /api/events subscriber re-establishes the LISTEN
+    })
+  }
+  catch (err) {
+    listenerUp = false
+    throw err
+  }
+
+  // Keep intermediaries from timing out idle streams.
+  const heartbeat = setInterval(() => {
+    for (const res of sseClients)
+      res.write(': ping\n\n')
+  }, 25000)
+  heartbeat.unref()
+}
+
 const DEFAULT_PORT = VIEWER_PORT
 
 /**
  * Start the viewer HTTP server. Resolves once listening. It serves `defaultName`
- * but every /api route may target another project via `?project=<name>`, so the
- * in-page project switcher works against the live server too.
+ * but every /api route may target another project via `?project=<name>` — or the
+ * whole store via `?project=*` — so the in-page project switcher works against
+ * the live server too.
  */
 export async function runViewer (defaultName: string, port: number = DEFAULT_PORT): Promise<void> {
   const htmlPath = viewerHtmlPath()
@@ -588,7 +628,8 @@ export async function runViewer (defaultName: string, port: number = DEFAULT_POR
     }
     return c
   }
-  await ctxFor(defaultName) // validate up front
+  if (defaultName !== ALL_SCOPE)
+    await ctxFor(defaultName) // validate up front
 
   const server = createServer((req, res) => {
     const url      = new URL(req.url ?? '/', 'http://localhost')
@@ -606,6 +647,7 @@ export async function runViewer (defaultName: string, port: number = DEFAULT_POR
       try {
         const path  = url.pathname
         const pname = url.searchParams.get('project') || defaultName
+        const isAll = pname === ALL_SCOPE
         if (path === '/' || path === '/index.html') {
           const body = await readFile(htmlPath)
           res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -614,21 +656,26 @@ export async function runViewer (defaultName: string, port: number = DEFAULT_POR
         else if (path === '/api/projects')
           sendJson({ projects: await listProjects(), active: defaultName })
         else if (path === '/api/status')
-          sendJson(await buildStatus(await ctxFor(pname)))
+          sendJson(isAll ? await buildStatusAll() : await buildStatus(await ctxFor(pname)))
         else if (path === '/api/inventory') {
           const limit  = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? '200') || 200))
           const offset = Math.max(0, Number(url.searchParams.get('offset') ?? '0') || 0)
-          sendJson(await buildInventory(await ctxFor(pname), limit, offset))
+          sendJson(isAll ? await buildInventoryAll(limit, offset) : await buildInventory(await ctxFor(pname), limit, offset))
         }
         else if (path === '/api/doc') {
-          const doc = await buildDoc(await ctxFor(pname), url.searchParams.get('id') ?? '')
+          const id    = url.searchParams.get('id') ?? ''
+          const full  = url.searchParams.get('full') === '1'
+          const owner = isAll ? await ownerOrNull(id, projectOfDoc) : pname
+          const doc   = owner ? await buildDoc(await ctxFor(owner), id, full) : null
           if (doc)
             sendJson(doc)
           else
             sendJson({ error: 'not found' }, 404)
         }
         else if (path === '/api/node') {
-          const node = await buildNode(await ctxFor(pname), url.searchParams.get('id') ?? '')
+          const id    = url.searchParams.get('id') ?? ''
+          const owner = isAll ? await ownerOrNull(id, projectOfChunk) : pname
+          const node  = owner ? await buildNode(await ctxFor(owner), id) : null
           if (node)
             sendJson(node)
           else
@@ -637,14 +684,26 @@ export async function runViewer (defaultName: string, port: number = DEFAULT_POR
         else if (path === '/api/graph') {
           const n = Math.min(1200, Math.max(50, Number(url.searchParams.get('n') ?? '400') || 400))
           const k = Math.min(6, Math.max(1, Number(url.searchParams.get('k') ?? '3') || 3))
-          sendJson(await buildGraph(await ctxFor(pname), n, k))
+          sendJson(isAll ? await buildGraphAll(n, k) : await buildGraph(await ctxFor(pname), n, k))
         }
         else if (path === '/api/search') {
           const query = (url.searchParams.get('q') ?? '').trim()
           if (!query)
             sendJson({ error: 'empty query' }, 400)
           else
-            sendJson(await runSearch(await ctxFor(pname), query))
+            sendJson(await runSearch(pname, ctxFor, query))
+        }
+        else if (path === '/api/events') {
+          await ensureEventListener()
+          res.writeHead(200, {
+            'Content-Type':                'text/event-stream',
+            'Cache-Control':               'no-store',
+            'Connection':                  'keep-alive',
+            'Access-Control-Allow-Origin': '*',
+          })
+          res.write(`data: ${JSON.stringify({ type: 'hello', at: new Date().toISOString() })}\n\n`)
+          sseClients.add(res)
+          req.on('close', () => sseClients.delete(res))
         }
         else
           sendJson({ error: 'not found' }, 404)
