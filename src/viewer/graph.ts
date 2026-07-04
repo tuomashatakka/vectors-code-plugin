@@ -33,16 +33,17 @@ export async function resolveCtx (projectName: string): Promise<ProjectCtx> {
 }
 
 export interface GraphNode {
-  id:        string;
-  title:     string;
-  source:    string;
-  source_id: string;
-  url:       string | null;
-  chunk:     number;
-  unit_type: string;
-  project:   string;
-  snippet:   string;
-  p:         [number, number, number];
+  id:          string;
+  title:       string;
+  source:      string;
+  source_id:   string;
+  document_id: string;
+  url:         string | null;
+  chunk:       number;
+  unit_type:   string;
+  project:     string;
+  snippet:     string;
+  p:           [number, number, number];
 }
 
 /** One project's fitted PCA + placement, retained between /api calls. */
@@ -62,20 +63,25 @@ export interface GraphState {
 export const graphState: GraphState = { idToIdx: new Map(), projects: new Map() }
 
 interface ChunkRow {
-  id:        string;
-  title:     string | null;
-  text:      string | null;
-  url:       string | null;
-  unit_type: string | null;
-  ordinal:   number | null;
-  embedding: string;
+  id:          string;
+  title:       string | null;
+  text:        string | null;
+  url:         string | null;
+  unit_type:   string | null;
+  ordinal:     number | null;
+  document_id: string;
+  source_id:   string | null;
+  rel_path:    string | null;
+  embedding:   string;
 }
 
 /** Sample up to n embedded chunks at random across the index. */
 async function sampleChunks (ctx: ProjectCtx, n: number): Promise<ChunkRow[]> {
   return q<ChunkRow>(
-    `SELECT c.id, c.title, c.text, c.url, c.unit_type, c.ordinal, e.embedding
+    `SELECT c.id, c.title, c.text, c.url, c.unit_type, c.ordinal, c.document_id,
+            d.source_id, d.rel_path, e.embedding
      FROM chunk c
+     JOIN document d ON d.id = c.document_id
      JOIN ${ctx.embTable} e ON e.embedding_id = c.embedding_id
      WHERE c.project_id = $1 AND c.embedding_id IS NOT NULL
      ORDER BY random()
@@ -192,17 +198,55 @@ function sphereLayout (count: number, R: number): [number, number, number][] {
 
 function toGraphNode (r: ChunkRow, project: string, p: [number, number, number]): GraphNode {
   return {
-    id:        r.id,
-    title:     r.title ?? '',
-    source:    r.title ?? '',
-    source_id: '',
-    url:       r.url ?? null,
-    chunk:     r.ordinal ?? 0,
-    unit_type: r.unit_type ?? '',
+    id:          r.id,
+    title:       r.title ?? '',
+    source:      r.rel_path ?? r.title ?? '',
+    source_id:   r.source_id ?? '',
+    document_id: r.document_id,
+    url:         r.url ?? null,
+    chunk:       r.ordinal ?? 0,
+    unit_type:   r.unit_type ?? '',
     project,
-    snippet:   snippet(r.text),
+    snippet:     snippet(r.text),
     p,
   }
+}
+
+// Hierarchy bundling weights: how strongly a chunk is pulled toward its
+//  document's / source's centroid. The residual PCA share keeps semantics.
+const DOC_PULL = 0.42
+const SRC_PULL = 0.16
+
+/**
+ * Pull each chunk toward its document + source centroids so the four-level
+ * hierarchy (project → source → document → chunk) reads spatially: documents
+ * clump, sources form neighbourhoods, and PCA still spreads the semantics.
+ */
+function bundleHierarchy (pos: [number, number, number][], rows: ChunkRow[]): void {
+  const centroids = (key: (r: ChunkRow) => string): Map<string, [number, number, number]> => {
+    const sums = new Map<string, [number, number, number, number]>()
+    rows.forEach((r, i) => {
+      const k = key(r)
+      const s = sums.get(k) ?? [ 0, 0, 0, 0 ]
+      s[0] += pos[i]![0]; s[1] += pos[i]![1]; s[2] += pos[i]![2]; s[3]++
+      sums.set(k, s)
+    })
+
+    const out = new Map<string, [number, number, number]>()
+    for (const [ k, s ] of sums)
+      out.set(k, [ s[0] / s[3], s[1] / s[3], s[2] / s[3] ])
+    return out
+  }
+
+  const byDoc = centroids(r => r.document_id)
+  const bySrc = centroids(r => r.source_id ?? '')
+  const rest  = 1 - DOC_PULL - SRC_PULL
+  rows.forEach((r, i) => {
+    const d = byDoc.get(r.document_id)!
+    const s = bySrc.get(r.source_id ?? '')!
+    for (let ax = 0; ax < 3; ax++)
+      pos[i]![ax] = round4(pos[i]![ax]! * rest + d[ax]! * DOC_PULL + s[ax]! * SRC_PULL)
+  })
 }
 
 // Build the sampled single-project graph: PCA(3) positions + knn synapse links.
@@ -216,9 +260,11 @@ export async function buildGraph (ctx: ProjectCtx, n: number, k: number): Promis
     return { nodes: [], links: [], k }
 
   const { pos, pca, scale } = projectCloud(vecs, 6.0)
-  const gidx                = rows.map((_, i) => i)
-  const nodes               = rows.map((r, i) => toGraphNode(r, ctx.name, pos[i]!))
-  const links               = knnLinks(vecs, gidx, k)
+  bundleHierarchy(pos, rows)
+
+  const gidx  = rows.map((_, i) => i)
+  const nodes = rows.map((r, i) => toGraphNode(r, ctx.name, pos[i]!))
+  const links = knnLinks(vecs, gidx, k)
 
   graphState.idToIdx = new Map(rows.map((r, i) => [ r.id, i ]))
   graphState.projects.set(ctx.name, { pca, scale, offset: [ 0, 0, 0 ], vecs, gidx })
@@ -261,8 +307,10 @@ export async function buildGraphAll (n: number, k: number): Promise<GraphResult>
 
     const vecs                = rows.map(r => parseVector(r.embedding))
     const { pos, pca, scale } = projectCloud(vecs, radius)
-    const offset              = centers[pi]!
-    const gidx: number[]      = []
+    bundleHierarchy(pos, rows)
+
+    const offset         = centers[pi]!
+    const gidx: number[] = []
 
     rows.forEach((r, i) => {
       const gi = nodes.length

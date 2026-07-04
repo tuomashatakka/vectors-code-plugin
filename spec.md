@@ -765,9 +765,13 @@ hits and relations always project into the right cluster.
 - `GET /api/graph?n=400&k=3` — sample up to `n` embedded chunks (`n` 50–1200),
   PCA(3) project their real embeddings into a `~[-6,6]` box, and build `k` (1–6)
   nearest-neighbour synapse links by cosine. Returns `{ nodes, links, k }`; nodes
-  carry `{ id, title, source, url, chunk, unit_type, project, snippet,
-  p:[x,y,z] }`. In the `*` scope each project is its own `radius≈3` cluster
-  offset on the spiral, links stay within clusters, and the response adds
+  carry `{ id, title, source (rel_path), source_id, document_id, url, chunk,
+  unit_type, project, snippet, p:[x,y,z] }`. Positions are **hierarchy-bundled**:
+  each chunk is pulled toward its document centroid (`DOC_PULL 0.42`) and source
+  centroid (`SRC_PULL 0.16`) so the four-level hierarchy (project → source →
+  document → chunk) reads spatially while PCA keeps the semantic spread. In the
+  `*` scope each project is its own `radius≈3` cluster offset on the spiral,
+  links stay within clusters, and the response adds
   `projects: [{ name, center, count }]`.
 - `GET /api/search?q=…` — reranked search (topk 8, or `searchGlobal` topk 10 in
   the `*` scope); hits already in the sampled graph carry a `graph_index`,
@@ -801,9 +805,29 @@ Interaction semantics in the viewer page:
   plus the document's aggregated references.
 - **All-projects scope** — the project picker offers `⁂ all projects`
   (`?project=*`): each project renders inside a subtle translucent container
-  shell (BackSide sphere + faint wireframe, hue derived deterministically from
-  the project name) with a floating label sprite; fog thins and the camera pulls
-  back to frame the whole constellation.
+  shell with a floating label sprite (hue derived deterministically from the
+  project name); fog thins and the camera pulls back to frame the whole
+  constellation.
+- **Hierarchy visuals (4 levels)** — containers are **content-shaped**, not
+  spheres: a subdivided icosahedron whose vertices are pushed out along the
+  cluster's support function (max point projection per vertex direction — a
+  soft convex hull of the digested content). Within a project, each multi-node
+  ingest source gets a fainter content-shaped wireframe hull, and each
+  document's sampled chunks are threaded by an ordinal-ordered **spine**
+  polyline. Legend: `⬡ project · ◇ source · ⌇ document · • chunk`.
+- **Hover + selection highlighting** — hovering raycasts continuously; both the
+  hovered and the selected node highlight their knn edges on dedicated overlay
+  meshes (accent for hover, hot for selection), boost their neighbours, and
+  emphasize their **parent chain**: the document spine brightens on its own
+  overlay, and the source hull + project shell glow.
+- **Billboards** — the focused/hovered node and every node across their
+  highlighted edges show a key-descriptor billboard (chunk title, else leading
+  snippet words; sibling chunks sharing a descriptor are deduped to the
+  strongest), rendered as canvas sprites that fade in/out.
+- **Long transitions** — every node/edge state change is a *target* eased in
+  the frame loop (`EASE_NODE 0.035`, `EASE_COL 0.04`, `EASE_MAT 0.045` per
+  frame ≈ 1–2 s settle): node size/alpha/color, base-link dimming, overlay
+  opacities, spines, hull/shell emphasis, labels, and billboards never snap.
 - **Live activity** — the page subscribes to `/api/events`; searches and
   ingests from anywhere land in a bottom-right activity feed (colored by
   project, fading after ~9 s). Search hits present in the sampled graph pulse
