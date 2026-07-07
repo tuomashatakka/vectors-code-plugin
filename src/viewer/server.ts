@@ -1,8 +1,10 @@
 /**
  * 3D synapse viewer server (TypeScript port of viewer_server.py).
  *
- * Serves assets/viewer.html plus a tiny JSON API over a project's vector index:
- *   GET /                       the viewer page
+ * Serves the static viewer front-end (assets/viewer/) plus a tiny JSON API
+ * over a project's vector index:
+ *   GET /                       the viewer app (static assets/viewer/ bundle)
+ *   GET /vendor/three/...       vendored three.js (build/ + examples/jsm/ only)
  *   GET /api/status             live index status (name, documents, chunks, ...)
  *   GET /api/inventory          data inventory: sources + paginated documents + global projects
  *   GET /api/doc?id=...         one document's chunk listing (add &full=1 for the
@@ -12,6 +14,8 @@
  *                               are a PCA(3) projection of the real embeddings
  *   GET /api/search?q=...       reranked search; hits carry a graph_index when
  *                               already sampled, else PCA coords + attach links
+ *   GET /api/intents?project=   paginated intent-memory listing (add &q= to recall
+ *                               similar prior intents instead of listing)
  *   GET /api/events             server-sent events tailing the Postgres
  *                               `vindex_events` channel (live searches/ingests)
  *
@@ -25,8 +29,6 @@
 import { createServer } from 'node:http'
 import type { ServerResponse } from 'node:http'
 import { VIEWER_PORT } from '../config.ts'
-import { readFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,13 +37,11 @@ import { EVENT_CHANNEL } from '../db/notify.ts'
 import { getSources, listProjects } from '../db/projects.ts'
 import { searchGlobal, searchProject } from '../search/search.ts'
 import { buildGraph, buildGraphAll, dot, graphState, parseVector, projectVec, resolveCtx, round4 } from './graph.ts'
+import { serveAsset, viewerAssetDir } from './static.ts'
+import { IntentStore } from '../intents/store.ts'
 import type { ProjectCtx } from './graph.ts'
 import type { SourceConfig } from '../db/types.ts'
 import type { ProjectSummary } from '../db/projects.ts'
-
-
-export { buildGraph, buildGraphAll, resolveCtx } from './graph.ts'
-export type { GraphResult, ProjectCtx } from './graph.ts'
 
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -49,17 +49,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 /** The pseudo project name selecting the all-projects scope. */
 export const ALL_SCOPE = '*'
 
-/** Locate viewer.html relative to this module, falling back to the skill path. */
-function viewerHtmlPath (): string {
-  const candidates = [
-    join(HERE, '..', '..', 'assets', 'viewer.html'),
-    join(HERE, '..', '..', 'skills', 'vector-index', 'assets', 'viewer.html'),
-  ]
-  for (const c of candidates)
-    if (existsSync(c))
-      return c
-  throw new Error('viewer.html not found in assets/')
-}
+const intents = new IntentStore()
 
 interface SearchEntry {
   id:            string;
@@ -572,6 +562,35 @@ async function ownerOrNull (
   }
 }
 
+const TABLE_NOT_FOUND = '42P01' // undefined_table — intent memory not yet applied
+
+/**
+ * `/api/intents` body: a paginated listing scoped to `pname` (or every project
+ * under the `*` scope), or — with `?q=` — a lexical recall of similar prior
+ * intents. Degrades to an empty listing instead of a 500 when the intent
+ * tables haven't been applied to this database yet.
+ */
+async function intentsResponse (pname: string, isAll: boolean, params: URLSearchParams): Promise<unknown> {
+  const limit  = Math.min(200, Math.max(1, Number(params.get('limit') ?? '50') || 50))
+  const offset = Math.max(0, Number(params.get('offset') ?? '0') || 0)
+  const query  = params.get('q')
+
+  try {
+    if (query) {
+      const matches = await intents.recall(query, isAll ? '' : pname, 10)
+      return { project: pname, query, matches }
+    }
+
+    const { total, intents: list } = await intents.list(isAll ? undefined : pname, limit, offset)
+    return { project: pname, total, offset, limit, intents: list }
+  }
+  catch (err) {
+    if ((err as { code?: string }).code === TABLE_NOT_FOUND)
+      return { project: pname, total: 0, offset, limit, intents: []}
+    throw err
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Live events: LISTEN on the vindex_events channel with one dedicated pooled
 //  client, fan the payloads out to every connected SSE response verbatim.
@@ -618,9 +637,10 @@ const DEFAULT_PORT = VIEWER_PORT
  * the live server too.
  */
 export async function runViewer (defaultName: string, port: number = DEFAULT_PORT): Promise<void> {
-  const htmlPath = viewerHtmlPath()
-  const ctxCache = new Map<string, ProjectCtx>()
-  const ctxFor   = async (name: string): Promise<ProjectCtx> => {
+  const assetDir  = viewerAssetDir() // fail fast if the front-end bundle isn't built
+  const threeRoot = join(HERE, '..', '..', 'node_modules', 'three')
+  const ctxCache  = new Map<string, ProjectCtx>()
+  const ctxFor    = async (name: string): Promise<ProjectCtx> => {
     let c = ctxCache.get(name)
     if (!c) {
       c = await resolveCtx(name)
@@ -642,68 +662,79 @@ export async function runViewer (defaultName: string, port: number = DEFAULT_POR
       res.end(JSON.stringify(obj))
     }
 
-    // eslint-disable-next-line complexity -- request handler dispatches several /api routes
+    // eslint-disable-next-line complexity -- request handler dispatches several /api + static routes
     void (async () => {
       try {
         const path  = url.pathname
         const pname = url.searchParams.get('project') || defaultName
         const isAll = pname === ALL_SCOPE
-        if (path === '/' || path === '/index.html') {
-          const body = await readFile(htmlPath)
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-          res.end(body)
-        }
-        else if (path === '/api/projects')
-          sendJson({ projects: await listProjects(), active: defaultName })
-        else if (path === '/api/status')
-          sendJson(isAll ? await buildStatusAll() : await buildStatus(await ctxFor(pname)))
-        else if (path === '/api/inventory') {
-          const limit  = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? '200') || 200))
-          const offset = Math.max(0, Number(url.searchParams.get('offset') ?? '0') || 0)
-          sendJson(isAll ? await buildInventoryAll(limit, offset) : await buildInventory(await ctxFor(pname), limit, offset))
-        }
-        else if (path === '/api/doc') {
-          const id    = url.searchParams.get('id') ?? ''
-          const full  = url.searchParams.get('full') === '1'
-          const owner = isAll ? await ownerOrNull(id, projectOfDoc) : pname
-          const doc   = owner ? await buildDoc(await ctxFor(owner), id, full) : null
-          if (doc)
-            sendJson(doc)
+
+        if (path.startsWith('/api/'))
+          if (path === '/api/projects')
+            sendJson({ projects: await listProjects(), active: defaultName })
+          else if (path === '/api/status')
+            sendJson(isAll ? await buildStatusAll() : await buildStatus(await ctxFor(pname)))
+          else if (path === '/api/inventory') {
+            const limit  = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? '200') || 200))
+            const offset = Math.max(0, Number(url.searchParams.get('offset') ?? '0') || 0)
+            sendJson(isAll ? await buildInventoryAll(limit, offset) : await buildInventory(await ctxFor(pname), limit, offset))
+          }
+          else if (path === '/api/doc') {
+            const id    = url.searchParams.get('id') ?? ''
+            const full  = url.searchParams.get('full') === '1'
+            const owner = isAll ? await ownerOrNull(id, projectOfDoc) : pname
+            const doc   = owner ? await buildDoc(await ctxFor(owner), id, full) : null
+            if (doc)
+              sendJson(doc)
+            else
+              sendJson({ error: 'not found' }, 404)
+          }
+          else if (path === '/api/node') {
+            const id    = url.searchParams.get('id') ?? ''
+            const owner = isAll ? await ownerOrNull(id, projectOfChunk) : pname
+            const node  = owner ? await buildNode(await ctxFor(owner), id) : null
+            if (node)
+              sendJson(node)
+            else
+              sendJson({ error: 'not found' }, 404)
+          }
+          else if (path === '/api/graph') {
+            const n = Math.min(1200, Math.max(50, Number(url.searchParams.get('n') ?? '400') || 400))
+            const k = Math.min(6, Math.max(1, Number(url.searchParams.get('k') ?? '3') || 3))
+            sendJson(isAll ? await buildGraphAll(n, k) : await buildGraph(await ctxFor(pname), n, k))
+          }
+          else if (path === '/api/search') {
+            const query = (url.searchParams.get('q') ?? '').trim()
+            if (!query)
+              sendJson({ error: 'empty query' }, 400)
+            else
+              sendJson(await runSearch(pname, ctxFor, query))
+          }
+          else if (path === '/api/intents')
+            sendJson(await intentsResponse(pname, isAll, url.searchParams))
+          else if (path === '/api/events') {
+            await ensureEventListener()
+            res.writeHead(200, {
+              'Content-Type':                'text/event-stream',
+              'Cache-Control':               'no-store',
+              'Connection':                  'keep-alive',
+              'Access-Control-Allow-Origin': '*',
+            })
+            res.write(`data: ${JSON.stringify({ type: 'hello', at: new Date().toISOString() })}\n\n`)
+            sseClients.add(res)
+            req.on('close', () => sseClients.delete(res))
+          }
           else
             sendJson({ error: 'not found' }, 404)
-        }
-        else if (path === '/api/node') {
-          const id    = url.searchParams.get('id') ?? ''
-          const owner = isAll ? await ownerOrNull(id, projectOfChunk) : pname
-          const node  = owner ? await buildNode(await ctxFor(owner), id) : null
-          if (node)
-            sendJson(node)
-          else
+        else if (path.startsWith('/vendor/three/')) {
+          const remainder = path.slice('/vendor/three'.length)
+          const allowed   = remainder.startsWith('/build/') || remainder.startsWith('/examples/jsm/')
+          if (!allowed || !await serveAsset(threeRoot, remainder, req, res))
             sendJson({ error: 'not found' }, 404)
         }
-        else if (path === '/api/graph') {
-          const n = Math.min(1200, Math.max(50, Number(url.searchParams.get('n') ?? '400') || 400))
-          const k = Math.min(6, Math.max(1, Number(url.searchParams.get('k') ?? '3') || 3))
-          sendJson(isAll ? await buildGraphAll(n, k) : await buildGraph(await ctxFor(pname), n, k))
-        }
-        else if (path === '/api/search') {
-          const query = (url.searchParams.get('q') ?? '').trim()
-          if (!query)
-            sendJson({ error: 'empty query' }, 400)
-          else
-            sendJson(await runSearch(pname, ctxFor, query))
-        }
-        else if (path === '/api/events') {
-          await ensureEventListener()
-          res.writeHead(200, {
-            'Content-Type':                'text/event-stream',
-            'Cache-Control':               'no-store',
-            'Connection':                  'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-          })
-          res.write(`data: ${JSON.stringify({ type: 'hello', at: new Date().toISOString() })}\n\n`)
-          sseClients.add(res)
-          req.on('close', () => sseClients.delete(res))
+        else if (req.method === 'GET' || req.method === 'HEAD') {
+          if (!await serveAsset(assetDir, path, req, res))
+            sendJson({ error: 'not found' }, 404)
         }
         else
           sendJson({ error: 'not found' }, 404)

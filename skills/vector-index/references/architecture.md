@@ -31,7 +31,8 @@ mcp/        server.ts (createMcpServer + stdio entry, 13 tools),
             http.ts (stateless streamable-HTTP transport — `vectors mcp http`,
             port 8765, POST/GET/DELETE /mcp + GET /health)
 viewer/     server.ts (live 3D viewer HTTP + JSON API, PCA),
-            make_demo.ts (static all-projects export + procedural demo)
+            static.ts (traversal-safe static asset serving for assets/viewer/,
+            ETag/304, /vendor/three/*)
 config.ts   all env config (VINDEX_* canonical; UKDB_* deprecated aliases)
 guards.ts   VINDEX_READONLY / VINDEX_ALLOW_ROOTS capability guards
 manifest.ts defaultProjectName() for bare `vectors index`
@@ -153,18 +154,26 @@ layers; `assemble.ts` trims results under a token budget (`--max-tokens`);
 
 ## The 3D viewer (`viewer/`)
 
-`server.ts` serves `assets/viewer.html` plus a small JSON API over a project's
-index: it samples up to N chunks, **PCAs their real embeddings to 3D** (via
-`ml-pca`), and builds kNN "synapse" links from cosine similarity; `/api/search`
-projects new hits into the same PCA basis. `make_demo.ts` provides two static
-exports from the same `assets/viewer.html`:
+`server.ts` serves the **split** front-end bundle at `assets/viewer/`
+(`index.html` + `viewer.css` + ES modules under `js/`) plus a JSON API over a
+project's index: it samples up to N chunks, **PCAs their real embeddings to
+3D** (via `ml-pca`), and builds kNN "synapse" links from cosine similarity;
+`/api/search` projects new hits into the same PCA basis. `/api/intents` is a
+read-only window over the intent store (`intents/store.ts`). There is no
+static-export mode — `vectors viewer [project] [--all] [--port N]` always runs
+the live server (default port 7341, `VINDEX_VIEWER_PORT`).
 
-- `exportStaticViewer()` (`vectors viewer`) bakes **every project's** sampled graph
-  into `window.VINDEX_PROJECTS` → a self-contained file with a **project picker**,
-  openable from `file://`. Needs a live DB.
-- `exportViewer()` (`bun run demo-viewer --demo`) injects `window.VINDEX_DEMO=true`
-  for the procedural offline demo — **no DB** — producing `docs/viewer-demo.html`,
-  the preview embedded on the GitHub Pages site.
+`static.ts` resolves and serves the bundle: a pure, traversal-safe
+`resolveAsset()` plus a filesystem `serveAsset()` (Content-Type by extension,
+weak ETag, `Cache-Control: no-cache`, 304s). `assets/viewer/` is mirrored
+byte-for-byte into `skills/vector-index/assets/viewer/` by
+`scripts/sync-assets.ts` (`bun run assets:sync`, `--check` for drift), enforced
+by a parity test in `tests/viewer.test.ts`. three.js is a vendored npm
+dependency (`three@0.178.0`, no CDN) served at `/vendor/three/*` and wired via
+an import map in `index.html`.
 
-`vectors viewer --serve [project]` runs the live server (default port 7341,
-`VINDEX_VIEWER_PORT`).
+The front-end is a two-panel app: a left tree (project switcher, semantic
+search, results/intents/sources▸docs▸chunks, live activity over
+`/api/events`) synced bidirectionally with a right 3D stage that renders a
+bokeh depth-of-field pass (`js/dof.js`) tuned to the scene's additive-glow
+materials.

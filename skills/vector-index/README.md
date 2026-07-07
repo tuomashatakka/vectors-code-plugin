@@ -32,7 +32,7 @@ vectors search "how does the flock pick ideas?"
 vectors search --global "welded indexed geometry deterministic seed"
 
 vectors ls                                     # all projects (* = active)
-vectors viewer --serve scene                   # 3D viewer at http://localhost:7341
+vectors viewer scene                           # 3D viewer at http://localhost:7341
 ```
 
 From the repo root, `bash setup.sh` provisions Postgres + pgvector and the global
@@ -45,7 +45,7 @@ CLI for you — **no Docker**.
 | Index / search / global search / viewer / daemon | `vectors` CLI |
 | Interactive shell (autocomplete + Ctrl-P project switcher) | bare `vectors` |
 | Live project-aware tools for Claude / an agent | `vectors mcp` (stdio MCP, 13 tools) |
-| Explore one project's space | `vectors viewer --serve` → 3D viewer |
+| Explore one project's space | `vectors viewer` → 3D viewer |
 
 ## MCP
 
@@ -85,7 +85,7 @@ active project with `$VINDEX_PROJECT`.
 ```
 SKILL.md                    skill entrypoint
 README.md
-assets/viewer.html          3D synapse navigator
+assets/viewer/              3D synapse navigator front-end (index.html, viewer.css, js/)
 daemon/                     background daemon service tooling (install.sh, env, plist)
 references/
   architecture.md           internals & extension points
@@ -95,4 +95,6 @@ references/
 ```
 
 The engine itself lives at the repo root under `src/` (TypeScript on Bun); this
-skill directory ships the docs, the daemon service tooling, and the viewer asset.
+skill directory ships the docs, the daemon service tooling, and a mirror of the
+viewer front-end bundle (kept in sync with `assets/viewer/` by
+`scripts/sync-assets.ts`).

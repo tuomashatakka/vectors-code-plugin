@@ -56,6 +56,18 @@ export interface ResolutionRow {
   grader:           string;
 }
 
+export interface IntentListEntry {
+  id:          string;
+  intent_text: string;
+  project:     string;
+  frequency:   number;
+  last_seen:   string | null;
+  outcome:     string; // best resolution's outcome, 'unknown' if none
+  score:       number; // best resolution's score, 0 if none
+  resolutions: number; // resolution count
+  excerpt:     string | null; // best resolution's response_excerpt
+}
+
 interface Grade {
   outcome: Outcome;
   score:   number;
@@ -495,5 +507,35 @@ export class IntentStore {
     return q<{ intent_text: string; frequency: number }>(
       'SELECT intent_text, frequency FROM intent ORDER BY frequency DESC, last_seen DESC LIMIT 25',
     )
+  }
+
+  /**
+   * Paginated intent listing for the viewer: every intent (optionally scoped
+   * to a project) with its best-scoring resolution folded in.
+   */
+  async list (project?: string, limit = 50, offset = 0): Promise<{ total: number; intents: IntentListEntry[] }> {
+    const scope = project ?? null
+    const total = await q1<{ count: number }>(
+      'SELECT count(*)::int AS count FROM intent i WHERE ($1::text IS NULL OR i.project = $1)',
+      [ scope ],
+    )
+    const intents = await q<IntentListEntry>(
+      `SELECT i.id, i.intent_text, i.project, i.frequency, i.last_seen,
+              COALESCE(best.outcome, 'unknown') AS outcome,
+              COALESCE(best.score, 0)::float    AS score,
+              (SELECT count(*)::int FROM intent_resolution r WHERE r.intent_id = i.id) AS resolutions,
+              best.response_excerpt AS excerpt
+       FROM intent i
+       LEFT JOIN LATERAL (
+         SELECT outcome, score, response_excerpt FROM intent_resolution r
+         WHERE r.intent_id = i.id AND r.response_excerpt IS NOT NULL AND r.response_excerpt <> ''
+         ORDER BY score DESC, id DESC LIMIT 1
+       ) best ON true
+       WHERE ($1::text IS NULL OR i.project = $1)
+       ORDER BY i.last_seen DESC NULLS LAST, i.frequency DESC
+       LIMIT $2 OFFSET $3`,
+      [ scope, limit, offset ],
+    )
+    return { total: total?.count ?? 0, intents }
   }
 }

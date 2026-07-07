@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>vector-index · synapse viewer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='5' cy='6' r='2.2' fill='%236eb5e8'/%3E%3Ccircle cx='11' cy='10' r='1.7' fill='%23b7a4ef'/%3E%3Ccircle cx='10' cy='4' r='1.2' fill='%23a9e5b8'/%3E%3Cpath d='M5 6L11 10M5 6L10 4' stroke='%236eb5e8' stroke-width='.6' opacity='.5'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="./viewer.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "/vendor/three/build/three.module.js",
+    "three/addons/": "/vendor/three/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<aside id="tree">
+  <header id="tree-head">
+    <div id="switcher">
+      <button id="sw-btn" aria-haspopup="listbox" aria-expanded="false">▾ loading…</button>
+      <div id="sw-list" role="listbox" aria-label="projects" hidden></div>
+    </div>
+    <div id="meta">loading…</div>
+    <button id="stale" hidden>↻ data changed</button>
+  </header>
+  <div id="searchrow">
+    <input id="q" placeholder="semantic search…" autocomplete="off" spellcheck="false" />
+    <button id="go">search</button>
+  </div>
+  <div id="treebody" role="tree" aria-label="index contents"></div>
+  <footer id="tree-foot" aria-label="all projects"></footer>
+</aside>
+
+<div id="divider" role="separator" aria-orientation="vertical" title="drag to resize · double-click to reset"></div>
+
+<main id="stage">
+  <canvas id="c" tabindex="0" aria-label="semantic graph"></canvas>
+  <button id="hamburger" aria-label="open panel">☰</button>
+  <div id="scrim"></div>
+
+  <section id="detail" class="panel">
+    <header class="head">
+      <div class="d-title" id="d-title"></div>
+      <div class="badges" id="d-badges"></div>
+    </header>
+    <div class="body" id="d-body"></div>
+  </section>
+
+  <footer id="legend" class="panel"></footer>
+</main>
+
+<div id="docview"><div class="card">
+  <div class="head">
+    <span class="ttl" id="dv-title"></span>
+    <span class="badges" id="dv-badges"></span>
+    <span class="x" id="dv-close">esc</span>
+  </div>
+  <div class="bd" id="dv-body"></div>
+</div></div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

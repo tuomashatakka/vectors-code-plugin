@@ -525,6 +525,8 @@ assistant's response, and whether it resolved the intent. Postgres-backed
   is visible.
 - **`stats()`** — frequency leaderboard (top 25).
 
+The viewer (§13) exposes this store read-only via `GET /api/intents`.
+
 ---
 
 ## 8. Daemon (`src/daemon/`)
@@ -684,9 +686,10 @@ commands). There is **no `vindex` bin** and no legacy multi-step commands.
   `all:` query prefix searches across projects, merged + reranked.
 - `vectors ls [name] [--json]` — list projects with doc/chunk counts (`*` =
   active); with a name, print that project's config + stats.
-- `vectors viewer [name] [outPath] [--serve] [--all]` — write the static
-  all-projects offline viewer (default), or run the live HTTP viewer with
-  `--serve` (`--all` serves the `*` all-projects scope by default).
+- `vectors viewer [name] [--all] [--port N]` — run the live HTTP viewer over a
+  project's index (`--all` serves the `*` all-projects scope; port defaults to
+  `VINDEX_VIEWER_PORT`/`PORT`/`7341`). Serves the split viewer front-end
+  (`assets/viewer/`, §13) plus its JSON API; there is no static-export mode.
 - `vectors daemon <start|stop|status|logs>` — `start` installs + launches the
   service (launchd/systemd); `stop` removes it. (Hidden: `daemon run`, the service
   entry point.)
@@ -749,8 +752,36 @@ ancestor with a `.vindex`/`.git` marker (basename) → `$VINDEX_DEFAULT`.
 
 ## 13. Viewer (`src/viewer/`)
 
-3D "synapse" navigator. `runViewer(project, port)` serves `assets/viewer.html`
-on `127.0.0.1` plus a JSON API (`node:http`, runs under Bun). PCA via `ml-pca`.
+3D "synapse" navigator. `runViewer(project, port)` (`src/viewer/server.ts`)
+serves the **split** front-end bundle at `assets/viewer/` — `index.html` +
+`viewer.css` + 14 ES modules under `js/` (`config, state, api, scene,
+hierarchy, billboards, controls, dof, frame, tree, detail, search, sse, main`)
+— plus a JSON API, all on `127.0.0.1` (`node:http`, runs under Bun). PCA via
+`ml-pca`. There is no static-export mode — the live server is the only way to
+run the viewer.
+
+**Static serving** (`src/viewer/static.ts`): `viewerAssetDir()` picks
+`assets/viewer/` over the `skills/vector-index/assets/viewer/` mirror
+(whichever has an `index.html`) — the two are kept byte-identical by `bun run
+assets:sync` (`scripts/sync-assets.ts`; `--check` exits 1 on drift) and a unit
+test in `tests/viewer.test.ts` enforces the parity. `resolveAsset()` is a
+pure, traversal-safe path resolver (rejects raw `..` segments, NUL bytes,
+backslashes, `//`, and malformed percent-encoding) so it's unit-testable
+without touching a filesystem; `serveAsset()` stats the resolved path and
+serves it with a `Content-Type` from an extension→MIME table, a weak `ETag`
+(`W/"size-mtimeMs"`), `Cache-Control: no-cache`, and a `304` on a matching
+`If-None-Match`.
+
+**three.js is vendored via npm**, not a CDN: `three@0.178.0` is a
+`package.json` dependency, and the server also serves `GET
+/vendor/three/<path>` restricted to `node_modules/three/build/` and
+`node_modules/three/examples/jsm/`. `index.html` wires it with an import map
+(`"three"` → `/vendor/three/build/three.module.js`, `"three/addons/"` →
+`/vendor/three/examples/jsm/`). No CDN, no network at view time.
+
+`runViewer`'s request handler dispatches `/api/*` first (an unknown `/api/*`
+path is a JSON `404`, not a fallthrough), then `/vendor/three/*`, then the
+static asset resolver, else `404`.
 
 Every `/api` route accepts `?project=<name>`; the special name **`*`
 (`ALL_SCOPE`)** selects the **all-projects scope**: one PCA cluster per project
@@ -760,7 +791,9 @@ out via `searchGlobal`, and node/doc lookups resolving their owning project
 automatically. Per-project PCA state is retained (keyed by project) so search
 hits and relations always project into the right cluster.
 
-- `GET /` — the viewer page.
+- `GET /` — the viewer page (and any other static path under `assets/viewer/`).
+- `GET /api/projects` — `{ projects: ProjectSummary[], active }` — the full
+  project list plus the server's default project (drives the switcher).
 - `GET /api/status` — `{ name, doc_count (chunks, kept for old baked payloads),
   documents, chunks, embedded, embed_model, state }` (`state` = `ready` or
   `embedding X/Y`). The `*` scope aggregates across projects and adds
@@ -801,32 +834,60 @@ hits and relations always project into the right cluster.
   otherwise PCA coords `p` + nearest `attach` links within their own project's
   cluster. Each entry carries `project`, `score`, optional `rerank_score`, and
   `signals` (`dense`/`sparse`).
+- `GET /api/intents?project=<name|*>&limit=&offset=[&q=]` — read-only view over
+  the intent store (§7): `{ project, total, offset, limit, intents: [{ id,
+  intent_text, project, frequency, last_seen, outcome, score, resolutions,
+  excerpt }] }` (best resolution picked by `score` DESC); `project=*` lists
+  across every project. With `?q=`, delegates to `IntentStore.recall` instead
+  and returns `{ project, query, matches }`. Missing intent tables (schema not
+  yet migrated) degrade to an empty listing rather than a 500.
 - `GET /api/events` — server-sent events. One dedicated pooled client LISTENs
   on `vindex_events` and every NOTIFY payload is fanned out verbatim as a
   `data:` frame (plus an initial `hello` and `: ping` heartbeats every 25 s), so
   searches and ingests from any process sharing the database appear in the
   viewer in real time.
 
-Interaction semantics in the viewer page:
+**Two-panel layout.** Left: a resizable **tree panel** (`#tree`, 220–480px,
+draggable divider persisted to `localStorage`, dblclick resets to 300px) —
+project switcher (incl. `⁂ all projects` = `*` scope) and meta line, a semantic
+search box, then four sections rendered into one ARIA `treeview`
+(`role="tree"`): **RESULTS** (search hits, including off-graph hits shown
+dimmed when they aren't in the sampled graph yet), **INTENTS** (from
+`/api/intents`; clicking an intent runs a semantic search of its text),
+**SOURCES ▸ documents ▸ chunks** (lazy-loaded via `/api/doc` on expand, a `⤢`
+opener for the full-document overlay, a "load more" button paginating
+`/api/inventory`), and **ACTIVITY** (the live `/api/events` feed). A footer
+lists every project globally. Right: the 3D graph **stage** (`#stage`) with
+the node-detail overlay, a legend (unit-type dots + kbd hints + the `⌁ dof`
+toggle chip), and the full-document modal (`#docview`). On mobile (≤768px) the
+tree becomes an off-canvas drawer behind a hamburger button + scrim.
 
+- **Bidirectional selection sync** — a graph click expands the tree to the
+  clicked node's source/document, scrolls it into view, and marks it
+  `aria-selected`; a document beyond the currently loaded inventory page gets a
+  synthesized row from the graph node so the path is never missing. Selecting
+  a document, source, or project row in the tree emphasizes the doc spine /
+  source hull / project shell in the graph (no chunk-level focus). A search
+  result or intent click focuses/searches the same way a graph pick would.
+- **Tree keyboard (ARIA treeview)** — roving `tabindex`; `↓`/`↑` move,
+  `→` expands (or moves into) a row, `←` collapses (or moves to the parent),
+  `Enter`/`Space` activates, `Home`/`End` jump to the first/last visible row.
+- **Global keys** — `/` focuses the search box from anywhere; `Esc` closes the
+  full-document overlay if open, else clears the current selection.
+- **Canvas keys** — with a node focused, `↑↓←→` step through its relations
+  (wrapping); `Esc` deselects.
+- **Touch** — one-finger drag orbits; two-finger pinch zooms and the pinch
+  midpoint pans; mouse `wheel` zooms (a ctrl-modified wheel event, as sent for
+  trackpad pinch, uses the same zoom path).
 - **Selection lock** — while a node is focused, pointer clicks cannot re-target
   the selection; a click on empty space or `Esc` deselects. Arrow-key traversal
-  and detail/inventory row clicks still move the focus deliberately.
+  and tree/detail row clicks still move the focus deliberately.
 - **Focused edges** — the focused node's incident edges are drawn on a bright
   overlay `LineSegments` (preallocated to the max node degree) while the base
   edge mesh dims to opacity `0.14`; both restore on deselect.
 - **Weighted search hits** — result nodes scale `1.3–2.6` by their final hybrid
-  `score` normalized against the best hit (static exports fall back to
-  token-match counts); non-hits dim as before.
-- **Data inventory** — the `▸ data` brand link or `d` toggles a right-side panel
-  listing the project's sources and documents (expandable to per-chunk rows via
-  `/api/doc`; chunk rows focus the graph node or load its detail) plus all
-  projects globally; clicking a project switches the viewer to it. Static
-  exports show the global list only. Every document row (and the detail panel's
-  document section) carries a `⤢` opener for the **full-document overlay**
-  (`/api/doc?full=1`): the whole file content with search-token highlighting,
-  plus the document's aggregated references.
-- **All-projects scope** — the project picker offers `⁂ all projects`
+  `score` normalized against the best hit; non-hits dim as before.
+- **All-projects scope** — the project switcher offers `⁂ all projects`
   (`?project=*`): each project renders inside a subtle translucent container
   shell with a floating label sprite (hue derived deterministically from the
   project name); fog thins and the camera pulls back to frame the whole
@@ -838,29 +899,47 @@ Interaction semantics in the viewer page:
   ingest source gets a fainter content-shaped wireframe hull, and each
   document's sampled chunks are threaded by an ordinal-ordered **spine**
   polyline. Legend: `⬡ project · ◇ source · ⌇ document · • chunk`.
-- **Hover + selection highlighting** — hovering raycasts continuously; both the
-  hovered and the selected node highlight their knn edges on dedicated overlay
-  meshes (accent for hover, hot for selection), boost their neighbours, and
-  emphasize their **parent chain**: the document spine brightens on its own
-  overlay, and the source hull + project shell glow.
-- **Billboards** — the focused/hovered node and every node across their
-  highlighted edges show a key-descriptor billboard (chunk title, else leading
-  snippet words; sibling chunks sharing a descriptor are deduped to the
-  strongest), rendered as canvas sprites that fade in/out.
+- **Hover + parent-chain highlighting** — hovering raycasts continuously; both
+  the hovered and the selected node highlight their knn edges on dedicated
+  overlay meshes (accent for hover, hot for selection), boost their
+  neighbours, and emphasize their **parent chain**: the document spine
+  brightens on its own overlay, and the source hull + project shell glow.
+- **Billboards, screen-space** — the focused/hovered node and every node
+  across their highlighted edges show a key-descriptor billboard (chunk title,
+  else leading snippet words; sibling chunks sharing a descriptor are deduped
+  to the strongest), rendered as canvas-texture sprites. Descriptor and
+  project-label sprites use `sizeAttenuation:false` with a pixel-derived scale
+  so they hold a constant on-screen height (~22px / ~26px) regardless of zoom,
+  recomputed on stage resize; the halo stays `sizeAttenuation:true` (a
+  spatial, world-unit glow). Billboards/halo/labels render on camera layer 1
+  *after* the DoF composer so they stay crisp above the blur.
+- **Depth of field** (`dof.js`) — `RenderPass → GlowBokehPass → OutputPass`.
+  Every material in the glow scene is `depthWrite:false`, so a stock
+  `BokehPass` (which builds depth via `scene.overrideMaterial`) would get
+  garbage depth; `GlowBokehPass` renders its own depth prepass instead — points
+  through a shared-uniform depth material that reproduces the visible discs'
+  `gl_PointSize`, lines/spines through a minimal position-only depth material —
+  with shells/hulls/halo/labels hidden for that pass. Params: `aperture
+  0.00035`, `maxblur 0.0045`, composer render target `UnsignedByteType` (to
+  preserve the legacy additive-glow clamping that a HalfFloat target would blow
+  past). The focal plane eases (~0.06/frame) toward the focused node, else the
+  hovered node, else the orbit target/graph centroid. A rolling 60-frame FPS
+  average below ~40 auto-degrades DoF off for the session; `?dof=0` in the URL
+  and the legend's `⌁ dof` chip both toggle it — off, the render path is
+  identical to the no-composer case.
+- **Color pipeline** — deliberately legacy: `THREE.ColorManagement.enabled =
+  false`, linear-sRGB output, `NoToneMapping`, to reproduce the original
+  three.js r128 additive-glow look exactly under the modern vendored three.js.
 - **Long transitions** — every node/edge state change is a *target* eased in
   the frame loop (`EASE_NODE 0.035`, `EASE_COL 0.04`, `EASE_MAT 0.045` per
   frame ≈ 1–2 s settle): node size/alpha/color, base-link dimming, overlay
   opacities, spines, hull/shell emphasis, labels, and billboards never snap.
 - **Live activity** — the page subscribes to `/api/events`; searches and
-  ingests from anywhere land in a bottom-right activity feed (colored by
+  ingests from anywhere land in the tree panel's ACTIVITY feed (colored by
   project, fading after ~9 s). Search hits present in the sampled graph pulse
   with the staggered pop cascade; an ingest flashes its project's container
-  shell and raises a `↻ data changed — refresh` chip that reloads graph +
-  status + inventory. The viewer's own searches are deduped from the echo.
-
-`vectors viewer export [out]` (`make_demo.ts`) writes a standalone
-`docs/viewer-demo.html` by injecting `window.VINDEX_DEMO=true` into the canonical
-viewer — a procedural embedding cloud, no backend.
+  shell and raises a `↻ data changed` chip that reloads graph + status +
+  inventory. The viewer's own searches are deduped from the echo.
 
 ---
 

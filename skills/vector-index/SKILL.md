@@ -101,8 +101,8 @@ vectors search --global "welded indexed geometry deterministic seed"
 vectors ls              # all projects + doc/chunk counts (* = active)
 vectors ls scene        # one project's config + stats
 vectors index scene --rebuild      # wipe + rebuild
-vectors viewer                     # static offline viewer (all projects baked in)
-vectors viewer --serve scene       # live 3D viewer → http://localhost:7341
+vectors viewer                     # live 3D viewer → http://localhost:7341
+vectors viewer --all               # serve the `*` all-projects scope
 ```
 
 Add `--no-rerank` for raw fused order (faster, skips the cross-encoder), `--json`
@@ -231,10 +231,12 @@ extraction). The searchable path never needs Ollama. Manage with
 - `src/intents/store.ts` — Postgres-backed intent memory.
 - `src/daemon/` — supervisor + chat/source feeders + digest worker.
 - `src/mcp/server.ts` — stdio MCP server (13 tools).
-- `src/viewer/` — 3D synapse viewer HTTP + JSON API (PCA); `make_demo.ts` exports
-  a static all-projects viewer (`exportStaticViewer`) + a procedural demo.
+- `src/viewer/` — 3D synapse viewer: `server.ts` (HTTP + JSON API, PCA via
+  `ml-pca`) + `static.ts` (traversal-safe static asset serving, `/vendor/three/*`).
 - `hooks/` — `user_prompt_submit.ts` (recall + inject), `stop.ts` (grade).
-- `assets/viewer.html` — 3D synapse navigator (live server, baked all-projects with a picker, or procedural demo).
+- `assets/viewer/` — 3D synapse navigator front-end (`index.html` + `viewer.css` +
+  ES modules under `js/`), served live by `src/viewer/server.ts`; mirrored into
+  `skills/vector-index/assets/viewer/` by `scripts/sync-assets.ts`.
 - `references/architecture.md` — internals & extension points.
 - `references/unified-knowledge-db-spec.md` + `unified-knowledge-db.sql` — the
   full unified-store design + DDL.

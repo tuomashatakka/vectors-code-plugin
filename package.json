@@ -35,7 +35,7 @@
     "setup": "bun src/cli/index.ts setup",
     "wire": "bash setup.sh",
     "unwire": "bash setup.sh --uninstall",
-    "demo-viewer": "bun src/viewer/make_demo.ts",
+    "assets:sync": "bun scripts/sync-assets.ts",
     "version:sync": "bun scripts/sync-versions.ts",
     "lint": "eslint src hooks eslint.config.mjs",
     "lint:fix": "eslint src hooks eslint.config.mjs --fix",
@@ -48,6 +48,7 @@
     "@xenova/transformers": "^2.17.2",
     "ml-pca": "^4.1.1",
     "pg": "^8.13.1",
+    "three": "0.178.0",
     "tree-sitter-wasms": "^0.1.11",
     "web-tree-sitter": "^0.26.10"
   },

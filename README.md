@@ -148,15 +148,18 @@ network-reachable endpoint (reverse proxies, remote agents) run
 ### 3D viewer
 
 ```bash
-vectors viewer                  # static HTML, every project baked in → docs/vectors-viewer.html
-vectors viewer --serve scene    # live server → http://localhost:7341
+vectors viewer                  # live server → http://localhost:7341
+vectors viewer scene            # serve a specific project
+vectors viewer --all            # serve the `*` all-projects scope
+vectors viewer --port 9000      # override the port (VINDEX_VIEWER_PORT/PORT)
 ```
 
-A three.js "synapse" navigator that PCAs each project's embedding space to 3D and
-links nearest neighbours; type to search, drag to orbit. The static export is a
-single self-contained file with a **project picker** — open it straight from
-`file://`, no server process. `--serve` streams fresh, unsampled data and the
-same picker switches projects live.
+A three.js "synapse" navigator that PCAs each project's embedding space to 3D
+and links nearest neighbours; type to search, drag to orbit. Two panels: a
+left tree (project switcher, search, results/intents/sources▸docs▸chunks,
+live activity) and a right 3D stage with depth-of-field and a node-detail
+overlay. three.js is vendored via npm (no CDN); there is no static-export
+mode — the live server is the only way to run it.
 
 ## Environment variables
 
@@ -196,10 +199,11 @@ src/
   intents/      Postgres-backed intent memory (record/recall/resolve/grade)
   daemon/       supervisor + chat/source feeders + digest worker
   mcp/          MCP server: stdio + streamable HTTP (13 tools)
-  viewer/       3D synapse viewer HTTP + JSON API (PCA)
+  viewer/       3D synapse viewer HTTP + JSON API (PCA) + static asset serving
 hooks/          UserPromptSubmit + Stop hooks (intent memory)
 references/     unified-knowledge-db.sql (full DDL) + design docs
-skills/vector-index/   SKILL.md, daemon tooling, viewer asset, reference docs
+assets/viewer/  viewer front-end bundle (index.html, viewer.css, ES modules)
+skills/vector-index/   SKILL.md, daemon tooling, viewer bundle mirror, reference docs
 ```
 
 Pipeline: **per-project** `files → chunk → embed → store` (ingest, incremental
@@ -215,7 +219,7 @@ bun run lint          # eslint (zero warnings enforced)
 bun test              # bun test
 bun run wire          # bash setup.sh
 bun run unwire        # bash setup.sh --uninstall
-bun run demo-viewer   # regenerate docs/viewer-demo.html (procedural demo)
+bun run assets:sync   # mirror assets/viewer/ into skills/vector-index/assets/viewer/
 ```
 
 ## Roadmap

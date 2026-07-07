@@ -6,9 +6,6 @@ on:
     paths:
       - 'docs/**'
       - '.github/workflows/pages.yml'
-      - 'assets/viewer.html'
-      - 'skills/vector-index/assets/viewer.html'
-      - 'src/viewer/make_demo.ts'
   workflow_dispatch:
 
 permissions:
@@ -36,9 +33,6 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
-
-      - name: Regenerate the demo viewer from the canonical viewer
-        run: bun run demo-viewer --demo docs/viewer-demo.html
 
       - name: Upload static site (docs/)
         uses: actions/upload-pages-artifact@v3
