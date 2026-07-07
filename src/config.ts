@@ -61,10 +61,16 @@ export const DSN = envAny([ 'VINDEX_DSN', 'UKDB_DSN' ], 'postgres://localhost:54
 export const OLLAMA_URL = envAny([ 'VINDEX_OLLAMA_URL', 'UKDB_OLLAMA_URL', 'OLLAMA_URL' ], 'http://127.0.0.1:11434')
 export const OLLAMA_MODEL = envAny([ 'VINDEX_OLLAMA_MODEL', 'UKDB_OLLAMA_MODEL' ], 'llama3.1:8b')
 
-/** Where Claude Code transcripts live (watched by the daemon's chat feeder). */
-export const CHAT_GLOBS = envAny([ 'VINDEX_CHAT_GLOBS', 'UKDB_CHAT_GLOBS' ], join(homedir(), '.claude', 'projects', '**', '*.jsonl'))
+// Session history watched by the daemon's chat feeder: Claude Code transcripts
+// (the `**` also covers nested subagents/*.jsonl) + the global prompt history.
+// `~` is expanded per entry — glob() would treat it as a literal directory.
+export const CHAT_GLOBS = envAny(
+  [ 'VINDEX_CHAT_GLOBS', 'UKDB_CHAT_GLOBS' ],
+  [ join(homedir(), '.claude', 'projects', '**', '*.jsonl'), join(homedir(), '.claude', 'history.jsonl') ].join(','),
+)
   .split(',')
   .map(s => s.trim())
+  .map(s => s === '~' || s.startsWith('~/') ? homedir() + s.slice(1) : s)
   .filter(Boolean)
 
 /** Daemon cadence, in seconds. Canonical VINDEX_*; UKDB_* aliases. */

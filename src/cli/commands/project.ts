@@ -7,8 +7,9 @@
  */
 import { homedir } from 'node:os'
 import { isAbsolute, resolve } from 'node:path'
-import { resolveProjectName, getOrCreateProject, getProject, addSource, listProjects } from '../../db/projects.ts'
+import { resolveProjectName, getOrCreateProject, getProject, projectByRoot, addSource, listProjects } from '../../db/projects.ts'
 import { ingestProject } from '../../db/ingest.ts'
+import { defaultProjectName } from '../../manifest.ts'
 import { assertWritable, assertAllowedRoot } from '../../guards.ts'
 import { str, flag } from '../kit.ts'
 import type { Command } from '../kit.ts'
@@ -44,7 +45,7 @@ export const projectCommands: Command[] = [
   {
     path:    [ 'index' ],
     summary: 'create + ingest a project in one step (incremental on re-run)',
-    usage:   'vectors index <name> [path] [--glob G ...] [--embed MODEL] [--rerank MODEL] [--url TEMPLATE] [--rebuild]',
+    usage:   'vectors index [name] [path] [--glob G ...] [--embed MODEL] [--rerank MODEL] [--url TEMPLATE] [--rebuild]',
     options: {
       glob:    { type: 'string', multiple: true },
       embed:   { type: 'string' },
@@ -53,13 +54,26 @@ export const projectCommands: Command[] = [
       rebuild: { type: 'boolean' },
     },
     async run (ctx) {
-      const name = ctx.positionals[0]
-      if (!name)
-        throw new Error('usage: vectors index <name> [path] [--glob G ...]')
+      assertWritable('index')
 
       const root = resolvePathArg(ctx.positionals[1] ?? process.cwd())
-      assertWritable('index')
       assertAllowedRoot(root)
+
+      // Bare `vectors index`: reuse the project already anchored at this root,
+      // else derive a name from the package manifest (falling back to the
+      // directory basename). An explicit first positional is always the name.
+      let name = ctx.positionals[0]
+      if (!name) {
+        const anchored = await projectByRoot(root)
+        name           = anchored?.name ?? await defaultProjectName(root)
+        if (!anchored) {
+          const clash = await getProject(name)
+          if (clash?.root_path && clash.root_path !== root)
+            throw new Error(`project '${name}' already exists for ${clash.root_path} — pass an explicit name: vectors index <name> [path]`)
+        }
+      }
+      if (!name)
+        throw new Error('usage: vectors index [name] [path] [--glob G ...]')
 
       await getOrCreateProject(name, {
         root,

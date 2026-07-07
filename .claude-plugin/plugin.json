@@ -1,6 +1,6 @@
 {
   "name": "vectors-plugin",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Global, local, project-partitioned semantic RAG: a vector-index skill plus an MCP server with per-project and cross-project (global) search, auto-resolving the active project from the working directory.",
   "author": {
     "name": "Tundra",

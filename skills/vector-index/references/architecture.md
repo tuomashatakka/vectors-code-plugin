@@ -26,12 +26,16 @@ search/     search.ts (hybrid dense+sparse RRF + rerank + confidence),
             grounding.ts, references.ts, assemble.ts, orchestration.ts
 intents/    store.ts (Postgres-backed intent memory: record/recall/resolve/grade)
 daemon/     daemon.ts (supervisor) + feeders/{chat,source}.ts + worker.ts
-mcp/        server.ts (stdio MCP server, 13 tools)
+            (chat feeder covers transcripts incl. subagents/ + ~/.claude/history.jsonl)
+mcp/        server.ts (createMcpServer + stdio entry, 13 tools),
+            http.ts (stateless streamable-HTTP transport — `vectors mcp http`,
+            port 8765, POST/GET/DELETE /mcp + GET /health)
 viewer/     server.ts (live 3D viewer HTTP + JSON API, PCA),
             make_demo.ts (static all-projects export + procedural demo)
 config.ts   all env config (VINDEX_* canonical; UKDB_* deprecated aliases)
 guards.ts   VINDEX_READONLY / VINDEX_ALLOW_ROOTS capability guards
-transcript.ts  tolerant JSONL transcript parsing
+manifest.ts defaultProjectName() for bare `vectors index`
+transcript.ts  tolerant JSONL parsing (transcripts + prompt history)
 prompts.ts  grounding / reasoning prompt scaffolds
 ```
 

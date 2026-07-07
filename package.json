@@ -36,6 +36,7 @@
     "wire": "bash setup.sh",
     "unwire": "bash setup.sh --uninstall",
     "demo-viewer": "bun src/viewer/make_demo.ts",
+    "version:sync": "bun scripts/sync-versions.ts",
     "lint": "eslint src hooks eslint.config.mjs",
     "lint:fix": "eslint src hooks eslint.config.mjs --fix",
     "typecheck": "tsc --noEmit -p tsconfig.json",

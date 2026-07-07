@@ -93,7 +93,7 @@ Notable knobs:
 | `VINDEX_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model. |
 | `VINDEX_OLLAMA_URL` / `UKDB_OLLAMA_URL` | `http://127.0.0.1:11434` | Local Ollama. |
 | `VINDEX_OLLAMA_MODEL` / `UKDB_OLLAMA_MODEL` | `llama3.1:8b` | Ollama model. |
-| `VINDEX_CHAT_GLOBS` / `UKDB_CHAT_GLOBS` | `~/.claude/projects/**/*.jsonl` | Transcript globs. |
+| `VINDEX_CHAT_GLOBS` / `UKDB_CHAT_GLOBS` | `~/.claude/projects/**/*.jsonl,~/.claude/history.jsonl` | Session-history globs (comma list). |
 | `VINDEX_CHAT_INTERVAL` / `UKDB_CHAT_INTERVAL` | `5` (s) | Chat feeder cadence. |
 | `VINDEX_SOURCE_INTERVAL` / `UKDB_SOURCE_INTERVAL` | `300` (s) | Source feeder cadence. |
 

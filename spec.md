@@ -404,9 +404,10 @@ imports (see §6).
    `git check-ignore --stdin -z` round trip per source; a missing git or a
    non-repo path degrades to no filtering). A source can opt back in with
    `include_ignored: true` in its `SourceConfig`.
-4. For each file: read UTF-8 (skip unreadable/binary), `sha256` the whole file.
-   **Diff-by-hash**: if a `document` row exists with the same `content_hash`,
-   skip it (unchanged).
+4. For each file: read UTF-8 (skip unreadable/binary), strip NUL bytes
+   (Postgres `text` cannot store `0x00`) before hashing, then `sha256` the
+   whole file. **Diff-by-hash**: if a `document` row exists with the same
+   `content_hash`, skip it (unchanged).
 5. Changed file: pick strategy. **Code files** (`pickStrategy(...)==='code'`)
    get `astChunks()`; if it returns null, fall back to `chunkFile()`. Non-code
    uses `chunkFile()`. Imports collected via `astImports()` for code files.
@@ -416,7 +417,8 @@ imports (see §6).
    rows, then per chunk UPSERT the vector
    (`ON CONFLICT (space_id, content_hash)` — **dedup within space**) and the
    `chunk` row (`ON CONFLICT (document_id, ordinal)`), storing `unit_type` and
-   `symbol`.
+   `symbol`. A file that produces **zero chunks** still UPSERTs its `document`
+   row (with the hash), so diff-by-hash marks it unchanged on the next sweep.
 8. **Import graph edges**: for each imported module path, UPSERT a
    `reference(kind='file', uri=path)` and a
    `link(src_kind='chunk', src_id=<first chunk>, dst_kind='reference',
@@ -533,9 +535,18 @@ aborts. The searchable path (ingest → embed → search) never needs Ollama; on
 derived abstraction tasks do.
 
 - **Chat feeder** (`feeders/chat.ts`) — watches `CHAT_GLOBS`
-  (`~/.claude/projects/**/*.jsonl`), parses transcripts past a per-file watermark
-  in `daemon_state` (`chat:<file>`), UPSERTs `session`/`message`. New rows
-  auto-enqueue `embed` jobs via the DDL trigger. Cadence `CHAT_INTERVAL` (5s).
+  (`~/.claude/projects/**/*.jsonl` — the `**` also covers nested
+  `subagents/*.jsonl` — plus `~/.claude/history.jsonl`), parses transcripts past
+  a per-file watermark in `daemon_state` (`chat:<file>`), UPSERTs
+  `session`/`message`. New rows auto-enqueue `embed` jobs via the DDL trigger.
+  Cadence `CHAT_INTERVAL` (5s). **`history.jsonl`** (the harness's global
+  prompt history — `{display, timestamp, project, sessionId}` lines) takes a
+  dedicated branch: parsed by `parsePromptHistory` (blank displays,
+  slash-command stubs, and machine text skipped; NULs stripped), mirrored into
+  one synthetic `claude-history` session as `role='user'` messages whose `seq`
+  is the filtered line index, with `message.project_id` resolved from the
+  line's `project` path via `project.root_path` and `created_at` taken from
+  the line's `timestamp`.
 - **Source feeder** (`feeders/source.ts`) — periodic sweep calling
   `ingestProject` for every project (diff-by-hash skips unchanged). Cadence
   `SOURCE_INTERVAL` (300s). Records `source:<project>` watermarks.
@@ -567,7 +578,7 @@ systemd `--user` on Linux (`ukdb-daemon.service`).
 ## 9. MCP tools (`src/mcp/`)
 
 `createMcpServer()` (`src/mcp/server.ts`) builds the server — name `vectors`,
-version `0.3.0`, `@modelcontextprotocol/sdk` — with 13 tools, served over two
+version single-sourced from `package.json`, `@modelcontextprotocol/sdk` — with 13 tools, served over two
 transports: **stdio** (`vectors mcp`; bootstrap gated behind `import.meta.main`)
 and **streamable HTTP** (`vectors mcp http`, § 9.1). Each tool returns a text
 content block (JSON). Where `project` is omitted it auto-resolves from cwd.
@@ -626,7 +637,9 @@ pin `VINDEX_PROJECT` per deployment or use `search_global`.
 
 ## 10. Hooks (`hooks/`)
 
-Claude Code hooks wired via the plugin manifest (`hooks/hooks.json`):
+Claude Code hooks wired via the plugin manifest (`hooks/hooks.json`) on
+marketplace installs; manual installs get the same two hooks merged into
+`~/.claude/settings.json` by `setup.sh` with absolute paths (see §15):
 
 - **`UserPromptSubmit` → `user_prompt_submit.ts`** — reads `{prompt, cwd,
   session_id}` on stdin, does a fast model-free `recall` (wall-clock budget
@@ -653,11 +666,19 @@ TUI; `vectors help [--all]` lists commands (`--all` includes hidden agent
 commands). There is **no `vindex` bin** and no legacy multi-step commands.
 
 **primary**
-- `vectors index <name> [path] [--glob G …] [--embed M] [--rerank M] [--url T] [--rebuild]`
+- `vectors index [name] [path] [--glob G …] [--embed M] [--rerank M] [--url T] [--rebuild]`
   — the whole index flow in one command: create the project (idempotent), attach a
   source (path defaults to the cwd; a Git `origin` remote becomes the `{path}` URL
   template; `--url` overrides), and ingest it incrementally (`--rebuild` wipes
   first). Guards: `assertWritable` then per-source `assertAllowedRoot`.
+  **Bare `vectors index`** (no name) resolves the project name itself: reuse the
+  project already anchored at this root (`project.root_path`), else derive one
+  via `defaultProjectName()` (`src/manifest.ts` — `package.json` →
+  `composer.json` → `Cargo.toml [package]` → `pyproject.toml [project]` →
+  `go.mod module`, scoped names take their last segment, fallback
+  `basename(root)`). If the derived name already belongs to a project rooted
+  elsewhere the command aborts and asks for an explicit name (a bare run must
+  never repoint another project's `default` source).
 - `vectors search <text…> [--project P] [--global] [--projects A,B] [--topk N] [--no-rerank] [--json]`
   — searches the current project by default; `--global`, `--projects`, or an
   `all:` query prefix searches across projects, merged + reranked.
@@ -685,7 +706,9 @@ Built on `@opentui/core` (`src/cli/tui.ts`), driving the same `match`/`dispatch`
 registry as the flag CLI. Features: command autocomplete over the registry (Tab
 accepts), a project switcher (Ctrl-P), and a query-first prompt — a bare line runs
 a search in the active project. Meta-commands: `:project NAME`, `:help`, `:q`;
-Ctrl-C exits.
+Ctrl-C exits. Long-running commands (`mcp`, `mcp http`, `daemon logs`,
+`daemon run`) are rejected with a "quit and run `vectors …`" hint instead of
+being executed (or misread as a search) inside the TUI.
 
 ---
 
@@ -712,7 +735,7 @@ Ctrl-C exits.
 | `VINDEX_INTENT_TIMEOUT` | — | `1.5` (s) | Recall wall-clock budget (hook). |
 | `VINDEX_OLLAMA_URL` | `UKDB_OLLAMA_URL`, `OLLAMA_URL` | `http://127.0.0.1:11434` | Local Ollama (judge/digest). |
 | `VINDEX_OLLAMA_MODEL` | `UKDB_OLLAMA_MODEL` | `llama3.1:8b` | Ollama model. |
-| `VINDEX_CHAT_GLOBS` | `UKDB_CHAT_GLOBS` | `~/.claude/projects/**/*.jsonl` | Transcript globs (comma list). |
+| `VINDEX_CHAT_GLOBS` | `UKDB_CHAT_GLOBS` | `~/.claude/projects/**/*.jsonl,~/.claude/history.jsonl` | Session-history globs (comma list). |
 | `VINDEX_CHAT_INTERVAL` | `UKDB_CHAT_INTERVAL` | `5` (s) | Chat feeder cadence. |
 | `VINDEX_SOURCE_INTERVAL` | `UKDB_SOURCE_INTERVAL` | `300` (s) | Source feeder cadence. |
 | `VINDEX_VIEWER_PORT` | `PORT` | `7341` | 3D viewer port. |
@@ -850,3 +873,32 @@ units, C2 structure-aware context-prefixed chunking, C3 hybrid dense+sparse RRF
 provenance/grounding, C7 token-budget assembly, C9 capability guards, C11
 reasoning/grounding prompt scaffolds. The implementation realizes C1–C3, C5, C7,
 C9, C11 today; the unified-db schema (§2) is the substrate for the rest.
+
+---
+
+## 15. Installation & editor wiring
+
+`bash setup.sh` (repo root) is the one-shot installer/updater: Bun, PostgreSQL
+16 + pgvector (Homebrew/apt, no Docker), the `vectors` DB + extensions, deps,
+schema (`vectors setup --no-daemon`), a version sync
+(`scripts/sync-versions.ts` keeps `.claude-plugin/plugin.json` in lockstep
+with `package.json`), a global `vectors` CLI via `bun link` (a shim into the
+repo source — the installed CLI is always the checkout), editor/MCP wiring,
+and the background daemon (§8). `setup.sh --uninstall` reverses the wiring.
+
+Editor targets are **data-driven**: `scripts/environments.sh` emits
+TAB-separated records (`id label detector skill_dir command_dir mcp_kind
+mcp_path mcp_topkey mcp_flavor`); `setup.sh` binds every detected environment.
+All MCP entries point at `bun <repo>/src/mcp/server.ts`:
+
+| Target | MCP config | Extras |
+| --- | --- | --- |
+| Claude Code | `claude mcp add vectors -s user` (→ `~/.claude.json`) | skill + `/vectors` command symlinks; `UserPromptSubmit`/`Stop` hooks merged into `~/.claude/settings.json` (absolute paths; the plugin-manifest path in §10 covers marketplace installs) |
+| Claude Desktop | `…/Claude/claude_desktop_config.json` `mcpServers` | — |
+| opencode | `~/.config/opencode/opencode.json` `mcp` (`type: local`) | skill + command symlinks |
+| Codex | `$CODEX_HOME/config.toml` `[mcp_servers.vectors]` | skill + command symlinks |
+| Antigravity | `~/.antigravity/mcp_config.json` + three `~/.gemini/**/mcp_config.json` variants, `mcpServers` | skill symlink under `~/.gemini/skills` |
+| VS Code | `…/Code/User/mcp.json` `servers` (`type: stdio`) | — |
+
+Skills/commands are **symlinked into the repo**, so re-running `setup.sh` is
+only needed for new bindings, schema migrations, or restarting the daemon.

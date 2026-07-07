@@ -2,7 +2,7 @@
   "mcpServers": {
     "vectors": {
       "command": "bun",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/src/mcp/server.ts"]
+      "args": ["${CLAUDE_PLUGIN_ROOT:-.}/src/mcp/server.ts"]
     }
   }
 }

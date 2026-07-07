@@ -81,7 +81,8 @@ needs no flags:
 ```bash
 # index the project you're standing in
 cd ~/Documents/Projects/scene
-vectors index scene                        # root = cwd; git remote → blob URLs
+vectors index                              # name from package.json/Cargo.toml/… (falls back to the folder name)
+vectors index scene                        # or name it explicitly; root = cwd; git remote → blob URLs
 
 # or point at a path with explicit globs; re-run anytime → incremental re-ingest
 vectors index scene ~/Documents/Projects/scene \
@@ -117,8 +118,9 @@ vectors                         # autocomplete · Ctrl-P switch · :project NAME
 
 ### Background daemon
 
-Keeps the store current: a **chat feeder** (mirrors Claude transcripts into
-`session`/`message`), a **source feeder** (re-ingests changed files), and a
+Keeps the store current: a **chat feeder** (mirrors Claude transcripts — incl.
+subagent transcripts — and the global prompt history `~/.claude/history.jsonl`
+into `session`/`message`), a **source feeder** (re-ingests changed files), and a
 **digest worker** (embeds new content; optional local-Ollama summaries / fact
 extraction). Install as a service (launchd on macOS, systemd `--user` on Linux):
 
@@ -177,7 +179,7 @@ aliases.
 | `VINDEX_INTENT_MAX_TOKENS` | `400` | Injection token budget. |
 | `VINDEX_OLLAMA_URL` (alias `OLLAMA_URL`) | `http://127.0.0.1:11434` | Local Ollama (judge / digest). |
 | `VINDEX_OLLAMA_MODEL` | `llama3.1:8b` | Ollama model. |
-| `VINDEX_CHAT_GLOBS` (alias `UKDB_CHAT_GLOBS`) | `~/.claude/projects/**/*.jsonl` | Transcript globs (daemon chat feeder). |
+| `VINDEX_CHAT_GLOBS` (alias `UKDB_CHAT_GLOBS`) | `~/.claude/projects/**/*.jsonl,~/.claude/history.jsonl` | Session-history globs (daemon chat feeder): transcripts incl. subagents, plus the global prompt history. |
 | `VINDEX_CHAT_INTERVAL` / `VINDEX_SOURCE_INTERVAL` | `5` / `300` (s) | Feeder cadences. |
 | `VINDEX_VIEWER_PORT` (alias `PORT`) | `7341` | 3D viewer port. |
 | `VINDEX_MCP_HTTP_PORT` (alias `PORT`) | `8765` | Streamable-HTTP MCP port (`vectors mcp http`). |

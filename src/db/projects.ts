@@ -76,6 +76,11 @@ export async function getProject (name: string): Promise<RawProject | null> {
   return q1<RawProject>(`SELECT ${SELECT_COLS} FROM project WHERE name = $1`, [ name ])
 }
 
+/** The project anchored at exactly `root`, if any. */
+export async function projectByRoot (root: string): Promise<RawProject | null> {
+  return q1<RawProject>(`SELECT ${SELECT_COLS} FROM project WHERE root_path = $1`, [ root ])
+}
+
 export interface CreateProjectOpts {
   root?:         string | null;
   embed_model?:  string;

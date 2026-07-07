@@ -166,9 +166,14 @@ export async function runTui (): Promise<void> {
       return
     }
 
+    const hit = match(s.split(/\s+/))
+    if (hit?.cmd.longRunning) {
+      show(s, `'${hit.cmd.path.join(' ')}' runs a long-lived process — quit (:q) and run: vectors ${s}`)
+      return
+    }
+
     const out = await capture(async () => {
-      const hit = match(s.split(/\s+/))
-      if (hit && !hit.cmd.longRunning)
+      if (hit)
         await dispatch(hit.cmd, hit.rest)
       else
         await dispatch(match([ 'search' ])!.cmd, [ s, '--project', project ])

@@ -1,13 +1,14 @@
 /**
  * CHAT FEEDER — mirror Claude transcripts into session/message. Watches the
- * CHAT_GLOBS (~/.claude/projects/**\/*.jsonl), parses new lines past a per-file
- * watermark in daemon_state, and upserts them. New message rows auto-enqueue an
- * `embed` digest job via the DDL trigger.
+ * CHAT_GLOBS (~/.claude/projects/**\/*.jsonl — the `**` also covers nested
+ * subagents/*.jsonl — plus ~/.claude/history.jsonl), parses new lines past a
+ * per-file watermark in daemon_state, and upserts them. New message rows
+ * auto-enqueue an `embed` digest job via the DDL trigger.
  */
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import { q, q1, tx } from '../../db/pool.ts'
-import { parseTranscript } from '../../transcript.ts'
+import { parseTranscript, parsePromptHistory } from '../../transcript.ts'
 import { CHAT_GLOBS, CHAT_INTERVAL } from '../../config.ts'
 
 
@@ -35,10 +36,17 @@ async function setWatermark (key: string, wm: Watermark): Promise<void> {
 }
 
 async function listFiles (): Promise<string[]> {
-  const { glob } = await import('node:fs/promises')
-  const out      = new Set<string>()
+  const { glob, stat } = await import('node:fs/promises')
+  const out            = new Set<string>()
   for (const pattern of CHAT_GLOBS)
     try {
+      // A pattern without glob magic is a literal file path — glob() (notably
+      // Bun's) yields nothing for those, so stat it directly.
+      if (!(/[*?[{]/).test(pattern)) {
+        if ((await stat(pattern)).isFile())
+          out.add(pattern)
+        continue
+      }
       for await (const p of glob(pattern))
         out.add(p as string)
     }
@@ -46,10 +54,63 @@ async function listFiles (): Promise<string[]> {
   return [ ...out ]
 }
 
+/**
+ * Mirror the harness's global prompt history (~/.claude/history.jsonl) into one
+ * synthetic `claude-history` session. Each kept line becomes a `role='user'`
+ * message whose seq is its filtered index (the file is append-only and the
+ * filter deterministic, so the sequence is stable). The line's `project` path
+ * is resolved to a vectors project via `root_path` for the denormalized
+ * `message.project_id`; its `timestamp` becomes `created_at`.
+ */
+async function syncHistory (file: string): Promise<number> {
+  const key     = `chat:${file}`
+  let wm        = await getWatermark(key)
+  const entries = await parsePromptHistory(file)
+  if (entries.length <= (wm?.seq ?? 0))
+    return 0
+
+  if (!wm) {
+    const s = await q1<{ id: string }>(
+      'INSERT INTO session (title) VALUES ($1) RETURNING id',
+      [ 'claude-history' ],
+    )
+    wm = { sessionId: s!.id, seq: 0 }
+  }
+
+  // Resolve project paths -> ids once per pass (consecutive lines repeat them).
+  const projectIds = new Map<string, string | null>()
+  for (const e of entries.slice(wm.seq))
+    if (e.project && !projectIds.has(e.project)) {
+      const row = await q1<{ id: string }>('SELECT id FROM project WHERE root_path = $1', [ e.project ])
+      projectIds.set(e.project, row?.id ?? null)
+    }
+
+  let inserted = 0
+  await tx(async c => {
+    for (let i = wm!.seq; i < entries.length; i++) {
+      const e = entries[i]
+      await c.query(
+        `INSERT INTO message (session_id, project_id, role, seq, text, content_hash, created_at)
+         VALUES ($1,$2,'user',$3,$4,$5,COALESCE(to_timestamp($6::double precision / 1000.0), now()))
+         ON CONFLICT (session_id, seq) DO NOTHING`,
+        [ wm!.sessionId, e.project ? projectIds.get(e.project) ?? null : null, i, e.text, sha256(e.text), e.ts ],
+      )
+      inserted++
+    }
+  })
+  await setWatermark(key, { sessionId: wm.sessionId, seq: entries.length })
+  return inserted
+}
+
 /** One pass over all transcript files. Returns number of messages inserted. */
 export async function syncOnce (): Promise<number> {
   let inserted = 0
   for (const file of await listFiles()) {
+    if (basename(file) === 'history.jsonl') {
+      inserted += await syncHistory(file)
+      continue
+    }
+
     const key = `chat:${file}`
     let wm = await getWatermark(key)
     const messages = await parseTranscript(file)

@@ -32,7 +32,7 @@ function approxTokens (text: string): number {
  * `git check-ignore --stdin -z` round trip. Resolves to an empty set when git
  * is missing or `root` is not inside a work tree, so ingest keeps working.
  */
-async function gitIgnored (root: string, files: string[]): Promise<Set<string>> {
+export async function gitIgnored (root: string, files: string[]): Promise<Set<string>> {
   if (files.length === 0)
     return new Set()
   return new Promise(resolve => {
@@ -129,6 +129,9 @@ export async function ingestProject (name: string, rebuild = false): Promise<Ing
         continue // unreadable / binary — skip
       }
 
+      if (text.includes('\x00'))
+        text = text.replaceAll('\x00', '') // Postgres text cannot store NUL
+
       const fileHash = sha256(text)
 
       // Skip unchanged files.
@@ -149,13 +152,12 @@ export async function ingestProject (name: string, rebuild = false): Promise<Ing
       // to the heading/line/char chunker.
       const isCode   = pickStrategy(rel, proj.chunk_cfg.strategy) === 'code'
       const produced = isCode && await astChunks(rel, text, proj.chunk_cfg) || chunkFile(rel, text, proj.chunk_cfg)
-      if (produced.length === 0)
-        continue
 
       const imports = isCode ? await astImports(rel, text) : []
 
-      // Embed all chunks for this file in one batch.
-      const vectors = await embed(produced.map(c => c.text), proj.embed_model)
+      // Embed all chunks for this file in one batch. A 0-chunk file still
+      // UPSERTs its document row below so diff-by-hash marks it unchanged.
+      const vectors = produced.length ? await embed(produced.map(c => c.text), proj.embed_model) : []
 
       await tx(async client => {
         const doc = await client.query(

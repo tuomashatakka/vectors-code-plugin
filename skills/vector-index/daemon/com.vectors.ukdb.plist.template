@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  launchd template for the Unified Knowledge Database daemon (macOS).
+  launchd template for the vectors daemon (macOS).
 
   This file documents the shape of the agent that `install.sh` writes to
   ~/Library/LaunchAgents/com.vectors.ukdb.plist. install.sh fills in the real
-  python/script paths and expands an <EnvironmentVariables> dict from your
+  bun/daemon paths and expands an <EnvironmentVariables> dict from your
   ukdb-daemon.env, so you normally do not edit this by hand.
 
-  Placeholders: __PYTHON__ __DAEMON__ __LOG_OUT__ __LOG_ERR__ __ENV_DICT__
+  Placeholders: __BUN__ __DAEMON__ __LOG_OUT__ __LOG_ERR__ __ENV_DICT__
 -->
 <plist version="1.0">
 <dict>
@@ -16,7 +16,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>__PYTHON__</string>
+        <string>__BUN__</string>
         <string>__DAEMON__</string>
     </array>
 

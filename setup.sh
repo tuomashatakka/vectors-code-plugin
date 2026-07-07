@@ -271,6 +271,7 @@ note "persist it in your shell rc:  export VINDEX_DSN=$DSN"
 # ---------------------------------------------------------------------------
 say "installing dependencies + applying schema"
 [ -d node_modules ] || bun install
+bun "$ROOT/scripts/sync-versions.ts" || true
 bun "$ROOT/src/cli/index.ts" setup --no-daemon
 
 say "linking the global 'vectors' CLI"

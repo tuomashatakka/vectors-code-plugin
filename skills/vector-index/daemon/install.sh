@@ -28,6 +28,9 @@ if ! grep -qE '^(VINDEX|UKDB)_DSN=' "$ENV_FILE"; then
   echo "!! $ENV_FILE must define VINDEX_DSN (or the legacy UKDB_DSN) — a libpq DSN to the unified DB" >&2
   exit 1
 fi
+if grep -qE '^UKDB_(POLL_INTERVAL|FEEDER_INTERVAL|BATCH|DISABLE_FEEDERS|VINDEX_HOME)=' "$ENV_FILE"; then
+  echo ">> note: UKDB_{POLL_INTERVAL,FEEDER_INTERVAL,BATCH,DISABLE_FEEDERS,VINDEX_HOME} are not read by the daemon — use VINDEX_CHAT_INTERVAL / VINDEX_SOURCE_INTERVAL (see ukdb-daemon.env.example)"
+fi
 
 # The daemon is TypeScript on Bun; resolve an absolute bun path for launchd/systemd.
 # Repo root is two levels above the skill dir (skills/vector-index -> repo root).
@@ -58,6 +61,7 @@ Darwin)
   ENV_DICT=""
   while IFS='=' read -r key val; do
     val="${val/#\~/$HOME}"
+    val="${val//,\~/,$HOME}"   # also expand ~ after commas (glob lists)
     val="${val//&/&amp;}"; val="${val//</&lt;}"; val="${val//>/&gt;}"
     ENV_DICT+="        <key>$key</key><string>$val</string>"$'\n'
   done < <(read_env_pairs)
@@ -66,7 +70,7 @@ Darwin)
 const [tmpl, out, bun, daemon, lo, le, envdict] = process.argv.slice(1)
 const fs = require("fs")
 let s = fs.readFileSync(tmpl, "utf8")
-s = s.replaceAll("__PYTHON__", bun).replaceAll("__DAEMON__", daemon)
+s = s.replaceAll("__BUN__", bun).replaceAll("__DAEMON__", daemon)
      .replaceAll("__LOG_OUT__", lo).replaceAll("__LOG_ERR__", le)
      .replace("        __ENV_DICT__\n", envdict)
 fs.writeFileSync(out, s)

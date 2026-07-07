@@ -42,7 +42,8 @@ Postgres: `export VINDEX_DSN=postgres://localhost:5432/vectors`.
 | `viewer/` | `server.ts` (live 3D synapse viewer HTTP + JSON API; `?project=*` all-projects scope, `/api/events` SSE, full-document `/api/doc?full=1`), `graph.ts` (per-project PCA clusters, knn links, golden-spiral layout, retained projection state), `make_demo.ts` (`exportStaticViewer` — self-contained all-projects HTML; `exportViewer` — procedural demo). |
 | `config.ts` | All env config. `VINDEX_*` canonical; `UKDB_*` accepted as deprecated aliases via `envAny()`. |
 | `guards.ts` | `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS` capability guards. |
-| `transcript.ts` | Tolerant JSONL transcript parsing (daemon chat feeder + intent grader). |
+| `manifest.ts` | `defaultProjectName()` — project name from package.json / composer.json / Cargo.toml / pyproject.toml / go.mod, fallback folder name (bare `vectors index`). |
+| `transcript.ts` | Tolerant JSONL parsing: transcripts (daemon chat feeder + intent grader) and `parsePromptHistory` for `~/.claude/history.jsonl`. |
 | `prompts.ts` | Grounding / reasoning prompt scaffolds. |
 
 `hooks/` holds the Claude Code `UserPromptSubmit` + `Stop` hooks (intent memory).
