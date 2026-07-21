@@ -128,6 +128,10 @@ export async function processOne (): Promise<boolean> {
 export async function runWorker (signal: AbortSignal): Promise<void> {
   const client = await getPool().connect()
   let wake: (() => void) | null = null
+  client.on('error', err => {
+    // A dropped LISTEN connection should not crash the whole daemon.
+    console.error('[pg] listen client error:', err.message)
+  })
   client.on('notification', () => wake?.())
   await client.query('LISTEN digest')
 

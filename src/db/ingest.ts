@@ -27,6 +27,19 @@ function approxTokens (text: string): number {
   return Math.max(1, Math.round(text.length / 4))
 }
 
+const EMBED_BATCH_SIZE = 32
+
+/**
+ * Embed texts in fixed-size batches — one huge file (1000s of chunks) must
+ * not become a single unbounded ONNX forward pass.
+ */
+async function embedBatched (texts: string[], model: string): Promise<number[][]> {
+  const out: number[][] = []
+  for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE)
+    out.push(...await embed(texts.slice(i, i + EMBED_BATCH_SIZE), model))
+  return out
+}
+
 /**
  * Relative paths under `root` that git ignores, resolved with one
  * `git check-ignore --stdin -z` round trip. Resolves to an empty set when git
@@ -155,9 +168,9 @@ export async function ingestProject (name: string, rebuild = false): Promise<Ing
 
       const imports = isCode ? await astImports(rel, text) : []
 
-      // Embed all chunks for this file in one batch. A 0-chunk file still
-      // UPSERTs its document row below so diff-by-hash marks it unchanged.
-      const vectors = produced.length ? await embed(produced.map(c => c.text), proj.embed_model) : []
+      // A 0-chunk file still UPSERTs its document row below so diff-by-hash
+      // marks it unchanged.
+      const vectors = produced.length ? await embedBatched(produced.map(c => c.text), proj.embed_model) : []
 
       await tx(async client => {
         const doc = await client.query(

@@ -11,6 +11,12 @@ import { DEFAULT_EMBED_MODEL } from '../config.ts'
 // Keep model downloads in the same HF cache the Python stack used.
 env.allowLocalModels = true
 
+// Bun satisfies onnxruntime's node-vs-web check, but any construction-error
+// fallback still lands on onnxruntime-web's threaded-WASM path, which bootstraps
+// worker threads via browser-only Blob URLs — unsupported under Bun. Force
+// single-threaded WASM so that path can never spawn a worker.
+env.backends.onnx.wasm.numThreads = 1
+
 /** Map a sentence-transformers logical name to its Transformers.js ONNX repo. */
 export function toXenovaRepo (model: string): string {
   if (model.includes('/'))

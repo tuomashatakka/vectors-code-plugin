@@ -5,12 +5,17 @@
  */
 import {
   AutoTokenizer,
-  AutoModelForSequenceClassification
+  AutoModelForSequenceClassification,
+  env
 
 
 } from '@xenova/transformers'
 import type { PreTrainedTokenizer, PreTrainedModel } from '@xenova/transformers'
 import { DEFAULT_RERANK_MODEL } from '../config.ts'
+
+// See src/embed/embedder.ts — forces single-threaded WASM so a construction-error
+// fallback can never spawn onnxruntime-web's browser-only Blob/Worker bootstrap.
+env.backends.onnx.wasm.numThreads = 1
 
 /** Map the logical cross-encoder name to its Transformers.js ONNX repo. */
 export function toXenovaReranker (model: string): string {
