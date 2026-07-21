@@ -20,6 +20,7 @@ vectors_codex_home() {
 
 # Emit supported environments as tab-separated records:
 #   id label detector skill_dir command_dir mcp_kind mcp_path mcp_topkey mcp_flavor
+#     hooks_path hooks_pre hooks_post
 # detector values:
 #   dir_or_cmd:<dir>:<command>  enabled when dir exists or command is present
 #   desktop:<config>:<app>      enabled when config (or its dir) or the app exists
@@ -27,38 +28,43 @@ vectors_codex_home() {
 #   none | claude_cli | json | toml (Codex config.toml [mcp_servers.*])
 # mcp_flavor values (json kind):
 #   claude (mcpServers/{command,args}) | opencode (mcp/{type:local,command:[]}) | vscode (servers/{type:stdio})
+# hooks_* — the intent-memory hooks. hooks_path is a JSON config with a top-level
+#   "hooks" object; hooks_pre/hooks_post name the pre-prompt and post-turn events.
+#   Claude Code and Codex share Claude's event names; Gemini CLI (which is what
+#   Antigravity runs on) renames them — its own `gemini hooks migrate` maps
+#   UserPromptSubmit -> BeforeAgent and Stop -> AfterAgent. "-" = no hook support.
 vectors_environment_records() {
   local codex_home
   codex_home="$(vectors_codex_home)"
 
   # --- cross-platform (paths identical on macOS + Linux) ---
   cat <<EOF_RECORDS
-claude_code	Claude Code	dir_or_cmd:$HOME/.claude:claude	$HOME/.claude/skills	$HOME/.claude/commands	claude_cli	-	-	-
-opencode	opencode	dir_or_cmd:$HOME/.config/opencode:opencode	$HOME/.config/opencode/skills	$HOME/.config/opencode/command	json	$HOME/.config/opencode/opencode.json	mcp	opencode
-codex	Codex	dir_or_cmd:$codex_home:codex	$codex_home/skills	$codex_home/commands	toml	$codex_home/config.toml	mcp_servers	codex
-antigravity	Antigravity	dir_or_cmd:$HOME/.gemini:antigravity	$HOME/.gemini/skills	-	json	$HOME/.antigravity/mcp_config.json	mcpServers	claude
-antigravity_ide	Antigravity (gemini-ide)	dir_or_cmd:$HOME/.gemini/antigravity-ide:antigravity	-	-	json	$HOME/.gemini/antigravity-ide/mcp_config.json	mcpServers	claude
-antigravity_gemini	Antigravity (gemini)	dir_or_cmd:$HOME/.gemini/antigravity:antigravity	-	-	json	$HOME/.gemini/antigravity/mcp_config.json	mcpServers	claude
-antigravity_config	Antigravity (gemini-config)	dir_or_cmd:$HOME/.gemini/config:antigravity	-	-	json	$HOME/.gemini/config/mcp_config.json	mcpServers	claude
+claude_code	Claude Code	dir_or_cmd:$HOME/.claude:claude	$HOME/.claude/skills	$HOME/.claude/commands	claude_cli	-	-	-	$HOME/.claude/settings.json	UserPromptSubmit	Stop
+opencode	opencode	dir_or_cmd:$HOME/.config/opencode:opencode	$HOME/.config/opencode/skills	$HOME/.config/opencode/command	json	$HOME/.config/opencode/opencode.json	mcp	opencode	-	-	-
+codex	Codex	dir_or_cmd:$codex_home:codex	$codex_home/skills	$codex_home/commands	toml	$codex_home/config.toml	mcp_servers	codex	$codex_home/hooks.json	UserPromptSubmit	Stop
+antigravity	Antigravity	dir_or_cmd:$HOME/.gemini:antigravity	$HOME/.gemini/skills	-	json	$HOME/.antigravity/mcp_config.json	mcpServers	claude	$HOME/.gemini/settings.json	BeforeAgent	AfterAgent
+antigravity_ide	Antigravity (gemini-ide)	dir_or_cmd:$HOME/.gemini/antigravity-ide:antigravity	-	-	json	$HOME/.gemini/antigravity-ide/mcp_config.json	mcpServers	claude	-	-	-
+antigravity_gemini	Antigravity (gemini)	dir_or_cmd:$HOME/.gemini/antigravity:antigravity	-	-	json	$HOME/.gemini/antigravity/mcp_config.json	mcpServers	claude	-	-	-
+antigravity_config	Antigravity (gemini-config)	dir_or_cmd:$HOME/.gemini/config:antigravity	-	-	json	$HOME/.gemini/config/mcp_config.json	mcpServers	claude	-	-	-
 EOF_RECORDS
 
   # --- OS-specific (Claude Desktop + VS Code live in different dirs per OS) ---
   case "$(uname -s)" in
     Darwin)
-      printf 'claude_desktop\tClaude Desktop\tdesktop:%s:%s\t-\t-\tjson\t%s\tmcpServers\tclaude\n' \
+      printf 'claude_desktop\tClaude Desktop\tdesktop:%s:%s\t-\t-\tjson\t%s\tmcpServers\tclaude\t-\t-\t-\n' \
         "$HOME/Library/Application Support/Claude/claude_desktop_config.json" \
         "/Applications/Claude.app" \
         "$HOME/Library/Application Support/Claude/claude_desktop_config.json"
-      printf 'vscode\tVS Code\tdir_or_cmd:%s:code\t-\t-\tjson\t%s\tservers\tvscode\n' \
+      printf 'vscode\tVS Code\tdir_or_cmd:%s:code\t-\t-\tjson\t%s\tservers\tvscode\t-\t-\t-\n' \
         "$HOME/Library/Application Support/Code" \
         "$HOME/Library/Application Support/Code/User/mcp.json"
       ;;
     Linux)
-      printf 'claude_desktop\tClaude Desktop\tdesktop:%s:%s\t-\t-\tjson\t%s\tmcpServers\tclaude\n' \
+      printf 'claude_desktop\tClaude Desktop\tdesktop:%s:%s\t-\t-\tjson\t%s\tmcpServers\tclaude\t-\t-\t-\n' \
         "$HOME/.config/Claude/claude_desktop_config.json" \
         "" \
         "$HOME/.config/Claude/claude_desktop_config.json"
-      printf 'vscode\tVS Code\tdir_or_cmd:%s:code\t-\t-\tjson\t%s\tservers\tvscode\n' \
+      printf 'vscode\tVS Code\tdir_or_cmd:%s:code\t-\t-\tjson\t%s\tservers\tvscode\t-\t-\t-\n' \
         "$HOME/.config/Code" \
         "$HOME/.config/Code/User/mcp.json"
       ;;
@@ -86,17 +92,21 @@ vectors_detector_matches() {
 
 # Iterate detected environments and invoke a callback with the record fields:
 #   callback id label skill_dir command_dir mcp_kind mcp_path mcp_topkey mcp_flavor
+#            hooks_path hooks_pre hooks_post
 # The literal "-" placeholder for empty fields is normalized to "" first.
 vectors_each_detected_environment() {
   local callback="$1"
   local id label detector skill_dir command_dir mcp_kind mcp_path mcp_topkey mcp_flavor f
-  while IFS=$'\t' read -r id label detector skill_dir command_dir mcp_kind mcp_path mcp_topkey mcp_flavor; do
+  local hooks_path hooks_pre hooks_post
+  while IFS=$'\t' read -r id label detector skill_dir command_dir mcp_kind mcp_path mcp_topkey mcp_flavor \
+    hooks_path hooks_pre hooks_post; do
     [ -n "$id" ] || continue
-    for f in skill_dir command_dir mcp_kind mcp_path mcp_topkey mcp_flavor; do
+    for f in skill_dir command_dir mcp_kind mcp_path mcp_topkey mcp_flavor hooks_path hooks_pre hooks_post; do
       [ "${!f}" = "-" ] && printf -v "$f" '%s' ""
     done
     if vectors_detector_matches "$detector"; then
-      "$callback" "$id" "$label" "$skill_dir" "$command_dir" "$mcp_kind" "$mcp_path" "$mcp_topkey" "$mcp_flavor"
+      "$callback" "$id" "$label" "$skill_dir" "$command_dir" "$mcp_kind" "$mcp_path" "$mcp_topkey" "$mcp_flavor" \
+        "$hooks_path" "$hooks_pre" "$hooks_post"
     fi
   done < <(vectors_environment_records)
 }

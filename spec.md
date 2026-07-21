@@ -538,7 +538,10 @@ derived abstraction tasks do.
 
 - **Chat feeder** (`feeders/chat.ts`) — watches `CHAT_GLOBS`
   (`~/.claude/projects/**/*.jsonl` — the `**` also covers nested
-  `subagents/*.jsonl` — plus `~/.claude/history.jsonl`), parses transcripts past
+  `subagents/*.jsonl` — plus `~/.claude/history.jsonl`,
+  `~/.codex/sessions/**/rollout-*.jsonl`, and
+  `~/.gemini/tmp/*/chats/*.json`; `parseTranscript` detects which of the three
+  formats a file is, §10), parses transcripts past
   a per-file watermark in `daemon_state` (`chat:<file>`), UPSERTs
   `session`/`message`. New rows auto-enqueue `embed` jobs via the DDL trigger.
   Cadence `CHAT_INTERVAL` (5s). **`history.jsonl`** (the harness's global
@@ -639,24 +642,44 @@ pin `VINDEX_PROJECT` per deployment or use `search_global`.
 
 ## 10. Hooks (`hooks/`)
 
-Claude Code hooks wired via the plugin manifest (`hooks/hooks.json`) on
-marketplace installs; manual installs get the same two hooks merged into
-`~/.claude/settings.json` by `setup.sh` with absolute paths (see §15):
+Two hooks, wired into **three harnesses**. Claude Code marketplace installs get
+them from the plugin manifest (`hooks/hooks.json`); every manual install gets
+them merged into the host's own config by `setup.sh` with absolute paths, driven
+by the `hooks_path`/`hooks_pre`/`hooks_post` columns of the environment record
+(§15). All three deliver the same stdin payload — `{prompt, cwd, session_id,
+transcript_path, hook_event_name}` — so one script serves each event:
 
-- **`UserPromptSubmit` → `user_prompt_submit.ts`** — reads `{prompt, cwd,
-  session_id}` on stdin, does a fast model-free `recall` (wall-clock budget
-  `VINDEX_INTENT_TIMEOUT`, default 1.5s), and prints a
-  `<vindex-intent-memory>…</vindex-intent-memory>` block to stdout (the harness
-  adds it to context). Then fires a **detached** `vectors intent record` so
-  storage never blocks. No-op under `VINDEX_INTENT_DISABLE`; always exits 0.
-- **`Stop` → `stop.ts`** — reads `{transcript_path, cwd}`, fires a **detached**
-  `vectors intent grade <transcript>` so the (possibly slow) Ollama judge never
-  holds up the turn. No-op under `VINDEX_INTENT_DISABLE`; always exits 0.
+| Harness | Config | Pre-prompt | Post-turn |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude/settings.json` | `UserPromptSubmit` | `Stop` |
+| Codex | `$CODEX_HOME/hooks.json` | `UserPromptSubmit` | `Stop` |
+| Antigravity / Gemini CLI | `~/.gemini/settings.json` | `BeforeAgent` | `AfterAgent` |
+
+- **pre-prompt → `user_prompt_submit.ts`** — does a fast model-free `recall`
+  (wall-clock budget `VINDEX_INTENT_TIMEOUT`, default 1.5s) and answers with
+  `{"hookSpecificOutput":{"hookEventName":…,"additionalContext":…}}` — the one
+  injection format all three accept (Gemini discards non-JSON stdout entirely).
+  `{}` is the no-op response. Then fires a **detached** `vectors intent record`
+  so storage never blocks. No-op under `VINDEX_INTENT_DISABLE`; always exits 0.
+- **post-turn → `stop.ts`** — fires a **detached** `vectors intent grade
+  <transcript>` so the (possibly slow) Ollama judge never holds up the turn, and
+  always writes `{}` to stdout. No-op under `VINDEX_INTENT_DISABLE`; exits 0.
+
+The recall block is wrapped in `<vindex-intent-memory>…</vindex-intent-memory>`,
+except under `BeforeAgent` where a `### vindex intent memory` heading is used
+instead — Gemini HTML-escapes `<` and `>` inside `additionalContext`.
+
+**Codex trust:** Codex fingerprints every hook into
+`[hooks.state."<file>:<snake_event>:<group>:<idx>"]` (`trusted_hash` +
+`enabled`) in `config.toml` and prompts once in-session before running it.
+`setup.sh` never writes that state — it prints a note and lets the user decide.
 
 Both paths skip harness-injected "user" text (`isMachineText` in
 `src/transcript.ts`): task-notifications, system reminders, slash-command
-envelopes, and command output are neither recorded, recalled against, nor
-graded — only genuine human prompts enter the intent store.
+envelopes, command output, and Codex's own `<recommended_plugins>` /
+`<permissions instructions>` / `# AGENTS.md instructions` preambles are neither
+recorded, recalled against, nor graded — only genuine human prompts enter the
+intent store.
 
 ---
 
@@ -698,6 +721,16 @@ commands). There is **no `vindex` bin** and no legacy multi-step commands.
   migrations + default space; full provisioning + editor/MCP wiring lives in
   `setup.sh`.
 - `vectors doctor` — diagnose Bun, DSN, Postgres, pgvector, schema, daemon.
+- `vectors db [table] [--limit N] [--offset N] [--cols a,b] [--order COL]
+  [--desc] [--where SQL] [--full] [--json]` (alias `vectors tables`) — inspect
+  the store. Bare, it lists every `public` table with exact row counts and
+  `pg_total_relation_size`; with a table name it prints rows as an aligned
+  terminal table. Table and column names are resolved through the catalog and
+  only the catalog's own spelling is interpolated, so argv cannot inject an
+  identifier (`--where` is raw SQL by design — it is a local debugging tool over
+  your own DB). Cells that would flood a terminal are summarized: `bytea` to a
+  hex prefix, `vector` to `⟨384d⟩`, `jsonb` to compact JSON, long text clipped;
+  `--full` disables that.
 
 **hidden (agent / hooks; shown under `vectors help --all`)**
 - `vectors intent <record|recall|resolve|grade|stats>` — intent memory.
@@ -738,7 +771,7 @@ being executed (or misread as a search) inside the TUI.
 | `VINDEX_INTENT_TIMEOUT` | — | `1.5` (s) | Recall wall-clock budget (hook). |
 | `VINDEX_OLLAMA_URL` | `UKDB_OLLAMA_URL`, `OLLAMA_URL` | `http://127.0.0.1:11434` | Local Ollama (judge/digest). |
 | `VINDEX_OLLAMA_MODEL` | `UKDB_OLLAMA_MODEL` | `llama3.1:8b` | Ollama model. |
-| `VINDEX_CHAT_GLOBS` | `UKDB_CHAT_GLOBS` | `~/.claude/projects/**/*.jsonl,~/.claude/history.jsonl` | Session-history globs (comma list). |
+| `VINDEX_CHAT_GLOBS` | `UKDB_CHAT_GLOBS` | Claude transcripts + history, Codex rollouts, Gemini chats | Session-history globs (comma list). |
 | `VINDEX_CHAT_INTERVAL` | `UKDB_CHAT_INTERVAL` | `5` (s) | Chat feeder cadence. |
 | `VINDEX_SOURCE_INTERVAL` | `UKDB_SOURCE_INTERVAL` | `300` (s) | Source feeder cadence. |
 | `VINDEX_VIEWER_PORT` | `PORT` | `7341` | 3D viewer port. |
@@ -967,17 +1000,23 @@ and the background daemon (§8). `setup.sh --uninstall` reverses the wiring.
 
 Editor targets are **data-driven**: `scripts/environments.sh` emits
 TAB-separated records (`id label detector skill_dir command_dir mcp_kind
-mcp_path mcp_topkey mcp_flavor`); `setup.sh` binds every detected environment.
-All MCP entries point at `bun <repo>/src/mcp/server.ts`:
+mcp_path mcp_topkey mcp_flavor hooks_path hooks_pre hooks_post`); `setup.sh`
+binds every detected environment. All MCP entries point at
+`bun <repo>/src/mcp/server.ts`; hook commands use the absolute `bun` path, since
+Codex and Gemini spawn hooks outside the user's interactive shell:
 
 | Target | MCP config | Extras |
 | --- | --- | --- |
-| Claude Code | `claude mcp add vectors -s user` (→ `~/.claude.json`) | skill + `/vectors` command symlinks; `UserPromptSubmit`/`Stop` hooks merged into `~/.claude/settings.json` (absolute paths; the plugin-manifest path in §10 covers marketplace installs) |
+| Claude Code | `claude mcp add vectors -s user` (→ `~/.claude.json`) | skill + `/vectors` command symlinks; `UserPromptSubmit`/`Stop` hooks merged into `~/.claude/settings.json` (the plugin-manifest path in §10 covers marketplace installs) |
 | Claude Desktop | `…/Claude/claude_desktop_config.json` `mcpServers` | — |
 | opencode | `~/.config/opencode/opencode.json` `mcp` (`type: local`) | skill + command symlinks |
-| Codex | `$CODEX_HOME/config.toml` `[mcp_servers.vectors]` | skill + command symlinks |
-| Antigravity | `~/.antigravity/mcp_config.json` + three `~/.gemini/**/mcp_config.json` variants, `mcpServers` | skill symlink under `~/.gemini/skills` |
+| Codex | `$CODEX_HOME/config.toml` `[mcp_servers.vectors]` | skill + command symlinks; `UserPromptSubmit`/`Stop` hooks merged into `$CODEX_HOME/hooks.json` (Codex prompts once to trust them — §10) |
+| Antigravity | `~/.antigravity/mcp_config.json` + three `~/.gemini/**/mcp_config.json` variants, `mcpServers` | skill symlink under `~/.gemini/skills`; `BeforeAgent`/`AfterAgent` hooks merged into `~/.gemini/settings.json` |
 | VS Code | `…/Code/User/mcp.json` `servers` (`type: stdio`) | — |
+
+Hook merges are additive and idempotent, keyed on the hook's script path;
+`--uninstall` prunes hook-by-hook rather than group-by-group, so entries another
+tool put in the same group survive.
 
 Skills/commands are **symlinked into the repo**, so re-running `setup.sh` is
 only needed for new bindings, schema migrations, or restarting the daemon.

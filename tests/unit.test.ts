@@ -10,7 +10,7 @@ import { classifyUnit } from '../src/chunk/units.ts'
 import { confidenceTier, verifyClaim } from '../src/search/grounding.ts'
 import { assembleWithinBudget } from '../src/search/assemble.ts'
 import { defaultProjectName } from '../src/manifest.ts'
-import { parsePromptHistory } from '../src/transcript.ts'
+import { isMachineText, parsePromptHistory, parseTranscript } from '../src/transcript.ts'
 import { gitIgnored } from '../src/db/ingest.ts'
 import { DEFAULT_CHUNK_CONFIG, type SearchHit } from '../src/db/types.ts'
 import pkg from '../package.json' with { type: 'json' }
@@ -139,6 +139,96 @@ describe('prompt history', () => {
 
   test('missing file yields empty', async () => {
     expect(await parsePromptHistory('/nonexistent/history.jsonl')).toEqual([])
+  })
+})
+
+describe('transcript formats', () => {
+  async function withFile (name: string, body: string, fn: (p: string) => Promise<void>): Promise<void> {
+    const dir  = await mkdtemp(join(tmpdir(), 'vectors-test-'))
+    const file = join(dir, name)
+    await writeFile(file, body)
+    try {
+      await fn(file)
+    }
+    finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+
+  test('claude jsonl keeps user/assistant, skips meta lines', async () => {
+    const lines = [
+      JSON.stringify({ type: 'summary', summary: 'ignore me' }),
+      JSON.stringify({ message: { role: 'user', content: 'index this repo' }}),
+      JSON.stringify({ message: { role: 'assistant', content: [{ type: 'text', text: 'on it' }] }}),
+      'not json at all',
+    ]
+    await withFile('t.jsonl', lines.join('\n') + '\n', async file => {
+      expect(await parseTranscript(file)).toEqual([
+        { role: 'user', text: 'index this repo' },
+        { role: 'assistant', text: 'on it' },
+      ])
+    })
+  })
+
+  test('codex rollout unwraps payload and drops the developer preamble', async () => {
+    const ev = (role: string, text: string, type = 'input_text') =>
+      JSON.stringify({ timestamp: 't', type: 'response_item', payload: { type: 'message', role, content: [{ type, text }] }})
+    const lines = [
+      JSON.stringify({ timestamp: 't', type: 'session_meta', payload: { session_id: 's', cwd: '/x' }}),
+      ev('developer', '<permissions instructions>\nsandbox'),
+      ev('user', 'wire the hooks'),
+      JSON.stringify({ timestamp: 't', type: 'event_msg', payload: { type: 'token_count', total: 12 }}),
+      ev('assistant', 'wired', 'output_text'),
+    ]
+    await withFile('rollout-x.jsonl', lines.join('\n') + '\n', async file => {
+      expect(await parseTranscript(file)).toEqual([
+        { role: 'user', text: 'wire the hooks' },
+        { role: 'assistant', text: 'wired' },
+      ])
+    })
+  })
+
+  test('gemini chat document maps gemini->assistant and drops notices', async () => {
+    const doc = {
+      sessionId: 's',
+      messages:  [
+        { type: 'info', content: 'MCP issues detected.' },
+        { type: 'user', content: [{ text: 'convert the pdf' }] },
+        { type: 'error', content: '[API Error: quota]' },
+        { type: 'gemini', content: 'reading main.py' },
+        { type: 'gemini', content: '' },
+      ],
+    }
+    // Pretty-printed: line one is a bare `{`, so this must NOT parse as JSONL.
+    await withFile('session-x.json', JSON.stringify(doc, null, 2), async file => {
+      expect(await parseTranscript(file)).toEqual([
+        { role: 'user', text: 'convert the pdf' },
+        { role: 'assistant', text: 'reading main.py' },
+      ])
+    })
+  })
+
+  test('minified gemini chat is still read as a document, not a jsonl record', async () => {
+    const doc = { messages: [{ type: 'user', content: 'hi' }] }
+    await withFile('session-min.json', JSON.stringify(doc), async file => {
+      expect(await parseTranscript(file)).toEqual([ { role: 'user', text: 'hi' } ])
+    })
+  })
+
+  test('missing file yields empty', async () => {
+    expect(await parseTranscript('/nonexistent/transcript.jsonl')).toEqual([])
+  })
+
+  test('machine text covers the codex-injected user turns', () => {
+    for (const t of [
+      '<recommended_plugins>\nhere is a list',
+      '# AGENTS.md instructions\n\n<INSTRUCTIONS>',
+      '<permissions instructions>\nFilesystem sandboxing',
+      '<environment_context>\ncwd',
+      '<system-reminder>stale',
+    ])
+      expect(isMachineText(t)).toBe(true)
+    expect(isMachineText('wire the hooks into codex')).toBe(false)
   })
 })
 

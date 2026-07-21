@@ -1,10 +1,14 @@
 #!/usr/bin/env bun
 /**
- * Stop hook — grade the just-finished exchange.
+ * Post-turn hook — grade the just-finished exchange.
+ * Wired as `Stop` (Claude Code, Codex) and `AfterAgent` (Gemini CLI /
+ * Antigravity); all three deliver the same `{transcript_path, cwd, session_id}`,
+ * and parseTranscript understands all three transcript formats.
  *
- * Reads the hook payload on stdin (transcript_path, cwd, session_id) and fires a
- * DETACHED `vindex intent grade <transcript>` so the (possibly slow) Ollama judge
- * never holds up the turn. Honours VINDEX_INTENT_DISABLE and always exits 0.
+ * Fires a DETACHED `vindex intent grade <transcript>` so the (possibly slow)
+ * Ollama judge never holds up the turn, and always writes an empty JSON object
+ * to stdout (Gemini requires valid JSON there). Honours VINDEX_INTENT_DISABLE
+ * and always exits 0.
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
@@ -48,5 +52,10 @@ async function main (): Promise<void> {
   catch { /* never break the turn */ }
 }
 
-main().then(() => process.exit(0))
-  .catch(() => process.exit(0))
+/** Every exit path answers `{}` — the no-op response all three harnesses take. */
+function done (): void {
+  process.stdout.write('{}\n')
+  process.exit(0)
+}
+
+main().then(done, done)

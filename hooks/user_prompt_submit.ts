@@ -1,12 +1,15 @@
 #!/usr/bin/env bun
 /**
- * UserPromptSubmit hook — recall prior resolutions for the incoming intent.
+ * Pre-prompt hook — recall prior resolutions for the incoming intent.
+ * Wired as `UserPromptSubmit` (Claude Code, Codex) and `BeforeAgent` (Gemini
+ * CLI / Antigravity); all three deliver the same `{prompt, cwd, session_id}`.
  *
- * Reads the hook payload on stdin (prompt, cwd, session_id), does a FAST,
- * model-free recall scoped to the cwd's project, and prints a compact knowledge
- * block to stdout (the harness adds it to context before the assistant replies).
- * Then fires a DETACHED `vindex intent record` so storage never blocks the turn.
- * Honours VINDEX_INTENT_DISABLE, has a wall-clock budget, and always exits 0.
+ * Reads the hook payload on stdin, does a FAST, model-free recall scoped to the
+ * cwd's project, and prints a compact knowledge block to stdout as
+ * `hookSpecificOutput.additionalContext` — the one injection format all three
+ * harnesses accept (Gemini ignores non-JSON stdout entirely). Then fires a
+ * DETACHED `vindex intent record` so storage never blocks the turn. Honours
+ * VINDEX_INTENT_DISABLE, has a wall-clock budget, and always exits 0.
  */
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -32,12 +35,24 @@ async function readStdin (): Promise<Record<string, unknown>> {
   }
 }
 
-function formatInjection (matches: RecallMatch[]): string {
+/**
+ * Gemini HTML-escapes `<` and `>` inside additionalContext, which would turn
+ * the XML delimiters into `&lt;vindex-intent-memory&gt;`, so BeforeAgent gets a
+ * markdown heading instead. Everywhere else keeps the tag pair.
+ */
+function delimiters (event: string): [string, string] {
+  return event === 'BeforeAgent'
+    ? [ '### vindex intent memory', '### end vindex intent memory' ]
+    : [ '<vindex-intent-memory>', '</vindex-intent-memory>' ]
+}
+
+function formatInjection (matches: RecallMatch[], event: string): string {
   if (!matches.length)
     return ''
 
-  const lines = [ '<vindex-intent-memory>', 'Prior resolutions for similar intents:' ]
-  let budget = INTENT_MAX_TOKENS * 4 // ~chars
+  const [ open, close ] = delimiters(event)
+  const lines           = [ open, 'Prior resolutions for similar intents:' ]
+  let budget            = INTENT_MAX_TOKENS * 4 // ~chars
   for (const m of matches) {
     const exc  = (m.response_excerpt ?? '').replace(/\s+/g, ' ').trim()
     const line = `- [${m.outcome} ${m.score.toFixed(2)}] ${m.intent}${exc ? ` → ${exc}` : ''}`
@@ -46,8 +61,20 @@ function formatInjection (matches: RecallMatch[]): string {
     budget -= line.length
     lines.push(line)
   }
-  lines.push('</vindex-intent-memory>')
+  lines.push(close)
   return lines.join('\n')
+}
+
+/**
+ * The portable hook response. Every harness reads
+ * `hookSpecificOutput.additionalContext`; `{}` is the valid no-op (Gemini
+ * requires a JSON object on stdout either way).
+ */
+function emit (event: string, context: string): void {
+  const payload = context
+    ? { hookSpecificOutput: { hookEventName: event, additionalContext: context }}
+    : {}
+  process.stdout.write(JSON.stringify(payload) + '\n')
 }
 
 function fireWriter (prompt: string, cwd: string, session: string): void {
@@ -70,14 +97,15 @@ function fireWriter (prompt: string, cwd: string, session: string): void {
 
 async function main (): Promise<void> {
   if (INTENT_DISABLED)
-    return
+    return emit('UserPromptSubmit', '')
 
   const payload = await readStdin()
+  const event   = typeof payload.hook_event_name === 'string' ? payload.hook_event_name : 'UserPromptSubmit'
   const prompt  = String(payload.prompt ?? '').trim()
   const cwd     = typeof payload.cwd === 'string' ? payload.cwd : process.cwd()
   const session = typeof payload.session_id === 'string' ? payload.session_id : ''
   if (!prompt || isMachineText(prompt))
-    return
+    return emit(event, '')
 
   const budgetMs = Number(process.env.VINDEX_INTENT_TIMEOUT || '1.5') * 1000
   const recall   = (async () => {
@@ -92,10 +120,7 @@ async function main (): Promise<void> {
   const timeout = new Promise<RecallMatch[]>(r => setTimeout(() => r([]), budgetMs))
   const matches = await Promise.race([ recall, timeout ])
 
-  const injection = formatInjection(matches)
-  if (injection)
-    process.stdout.write(injection + '\n')
-
+  emit(event, formatInjection(matches, event))
   fireWriter(prompt, cwd, session)
 }
 

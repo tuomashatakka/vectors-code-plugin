@@ -20,6 +20,7 @@ import { mcpCommands } from './commands/mcp.ts'
 import { setupCommands } from './commands/setup.ts'
 import { doctorCommands } from './commands/doctor.ts'
 import { daemonCommands } from './commands/daemon.ts'
+import { dbCommands } from './commands/db.ts'
 
 
 export const COMMANDS: Command[] = [
@@ -31,6 +32,7 @@ export const COMMANDS: Command[] = [
   ...daemonCommands,
   ...mcpCommands,
   ...doctorCommands,
+  ...dbCommands,
 ]
 
 function allPaths (c: Command): string[][] {

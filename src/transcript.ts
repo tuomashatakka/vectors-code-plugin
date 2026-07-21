@@ -1,11 +1,17 @@
 /**
- * transcript — tolerant parsing of chat-transcript JSONL (Claude Code / Desktop).
+ * transcript — tolerant parsing of harness chat transcripts.
  *
- * Turns a harness transcript file into a flat list of `{ role, text }` message
- * pairs. Both the daemon's chat mirror and the intent-memory grader need exactly
- * this, so the logic lives here once. Stdlib only — no model stack, no database.
+ * Turns a transcript file into a flat list of `{ role, text }` message pairs.
+ * Both the daemon's chat mirror and the intent-memory grader need exactly this,
+ * so the logic lives here once. Stdlib only — no model stack, no database.
+ *
+ * Three on-disk formats are understood, detected from the first line:
+ * - **Claude Code / Desktop** — JSONL, `{ message: { role, content } }` per line.
+ * - **Codex** — JSONL rollouts, `{ payload: { type: 'message', role, content } }`.
+ * - **Gemini CLI / Antigravity** — ONE JSON document with a `messages` array.
  */
 import { createReadStream } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
 
 /** One parsed, message-bearing line of a transcript. */
@@ -18,8 +24,12 @@ export interface TranscriptMessage {
  * Harness-injected "user" text that is not a human intent: background-task
  * notifications, system reminders, slash-command envelopes, command output.
  * The intent hooks and the grader must skip these or they pollute the store.
+ *
+ * The trailing entries are Codex's — it files its plugin suggestions, its
+ * permission preamble, and the AGENTS.md injection under `role: 'user'` like
+ * any typed prompt.
  */
-const MACHINE_TEXT_RE = /^\s*(\[SYSTEM NOTIFICATION|<(task-notification|system-reminder|local-command-stdout|command-name|command-message)\b)/
+const MACHINE_TEXT_RE = /^\s*(\[SYSTEM NOTIFICATION|# AGENTS\.md instructions|<(task-notification|system-reminder|local-command-stdout|command-name|command-message|recommended_plugins|environment_context|user_instructions|permissions instructions)\b)/
 
 export function isMachineText (text: string): boolean {
   return MACHINE_TEXT_RE.test(text)
@@ -100,29 +110,145 @@ async function * jsonlRecords (path: string): AsyncGenerator<Record<string, unkn
   }
 }
 
+/** The first non-blank line, without reading the rest of the file. */
+async function firstLine (path: string): Promise<string> {
+  let stream
+  try {
+    stream = createReadStream(path, { encoding: 'utf-8' })
+  }
+  catch {
+    return ''
+  }
+
+  const errored = new Promise<boolean>(resolve => {
+    stream!.once('error', () => resolve(true))
+    stream!.once('open', () => resolve(false))
+  })
+  if (await errored)
+    return ''
+
+  const rl = createInterface({ input: stream, crlfDelay: Infinity })
+  try {
+    for await (const raw of rl)
+      if (raw.trim())
+        return raw.trim()
+    return ''
+  }
+  finally {
+    rl.close()
+    stream.destroy()
+  }
+}
+
+function isRecord (v: unknown): v is Record<string, unknown> {
+  return Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+}
+
+/** Append `{ role, text }`, stripping NUL bytes and dropping empty text. */
+function push (msgs: TranscriptMessage[], role: string, content: unknown): void {
+  let text = extractText(content)
+  if (text.includes('\x00'))
+    text = text.replaceAll('\x00', '')
+  if (text.trim())
+    msgs.push({ role, text })
+}
+
 /**
- * Return `{ role, text }` for message-bearing lines, skipping tool/meta events.
- * Streams the file line-by-line and tolerates malformed JSON. NUL bytes are
- * stripped so transcripts embedding binary noise still parse safely.
+ * Gemini CLI / Antigravity: one JSON document, `messages: [{ type, content }]`
+ * where `type` is `user | gemini | info | error`. Only the first two are turns —
+ * `info`/`error` are UI notices (update banners, MCP warnings).
  */
-export async function parseTranscript (path: string): Promise<TranscriptMessage[]> {
+async function parseChatDocument (path: string): Promise<TranscriptMessage[]> {
+  let doc: unknown
+  try {
+    doc = JSON.parse(await readFile(path, 'utf-8'))
+  }
+  catch {
+    return []
+  }
+  if (!isRecord(doc) || !Array.isArray(doc.messages))
+    return []
+
   const msgs: TranscriptMessage[] = []
-  for await (const evRec of jsonlRecords(path)) {
-    const m =
-      evRec.message && typeof evRec.message === 'object'
-        ? (evRec.message as Record<string, unknown>)
-        : null
-    const role =
-      (m && typeof m.role === 'string' ? m.role : undefined) ??
-      (typeof evRec.type === 'string' ? evRec.type : undefined)
-    if (role !== 'user' && role !== 'assistant' && role !== 'tool')
+  for (const entry of doc.messages) {
+    if (!isRecord(entry))
       continue
 
-    let text = extractText(m ? m.content : evRec.content)
-    if (text.includes('\x00'))
-      text = text.replaceAll('\x00', '')
-    if (text.trim())
-      msgs.push({ role, text })
+    const type = typeof entry.type === 'string' ? entry.type : ''
+    const role = type === 'gemini' ? 'assistant' : type
+    if (role !== 'user' && role !== 'assistant')
+      continue
+    push(msgs, role, entry.content)
+  }
+  return msgs
+}
+
+/**
+ * Codex rollouts wrap every event as `{ timestamp, type, payload }`; the turns
+ * are `payload.type === 'message'`. `developer` (the system preamble) is not a
+ * turn, so only user/assistant survive.
+ */
+function codexMessage (rec: Record<string, unknown>): { role: string; content: unknown } | null {
+  if (!isRecord(rec.payload) || rec.payload.type !== 'message')
+    return null
+
+  const role = typeof rec.payload.role === 'string' ? rec.payload.role : ''
+  if (role !== 'user' && role !== 'assistant')
+    return null
+  return { role, content: rec.payload.content }
+}
+
+/**
+ * Claude Code / Desktop: `{ message: { role, content } }`, falling back to a
+ * top-level `type` for the older shape that carries the role there.
+ */
+function claudeMessage (rec: Record<string, unknown>): { role: string; content: unknown } | null {
+  const m    = isRecord(rec.message) ? rec.message : null
+  const role =
+    (m && typeof m.role === 'string' ? m.role : undefined) ??
+    (typeof rec.type === 'string' ? rec.type : undefined)
+  if (role !== 'user' && role !== 'assistant' && role !== 'tool')
+    return null
+  return { role, content: m ? m.content : rec.content }
+}
+
+/**
+ * True when the file is a single JSON document rather than JSONL: either it
+ * does not parse line-by-line (pretty-printed, opening on a bare `{`) or line
+ * one already carries the whole `messages` array (minified).
+ */
+function isChatDocument (head: string): boolean {
+  let probe: unknown
+  try {
+    probe = JSON.parse(head)
+  }
+  catch {
+    return true
+  }
+  return isRecord(probe) && Array.isArray(probe.messages)
+}
+
+/**
+ * Return `{ role, text }` for message-bearing entries, skipping tool/meta
+ * events. The format is detected from the first line: anything that is not a
+ * standalone JSON object per line is read as a single Gemini chat document.
+ * Tolerates malformed JSON; NUL bytes are stripped so transcripts embedding
+ * binary noise still parse safely.
+ */
+export async function parseTranscript (path: string): Promise<TranscriptMessage[]> {
+  const head = await firstLine(path)
+  if (!head)
+    return []
+  if (isChatDocument(head))
+    return parseChatDocument(path)
+
+  const msgs: TranscriptMessage[] = []
+  for await (const evRec of jsonlRecords(path)) {
+    const msg = codexMessage(evRec) ?? claudeMessage(evRec)
+    if (!msg)
+      continue
+
+    push(msgs, msg.role, msg.content)
   }
   return msgs
 }

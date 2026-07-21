@@ -32,6 +32,9 @@ MCP_CMD="bun"
 MCP_ARG="$ROOT/src/mcp/server.ts"
 HOOK_UPS="$ROOT/hooks/user_prompt_submit.ts"
 HOOK_STOP="$ROOT/hooks/stop.ts"
+# Codex and Gemini spawn hooks outside the user's interactive shell, so a bare
+# `bun` can miss ~/.bun/bin. Re-resolved after the Bun install step below.
+BUN_BIN="$(command -v bun || echo bun)"
 OS="$(uname -s)"
 DB_NAME="vectors"
 DSN="${VINDEX_DSN:-postgres://localhost:5432/$DB_NAME}"
@@ -109,46 +112,55 @@ if (re.test(t)) {
 ' "$1"
 }
 
-# Intent-memory hooks (Claude Code only — UserPromptSubmit + Stop are CC events).
-# Idempotent: keyed on the hook filename, so re-running never duplicates entries.
-merge_claude_hooks(){ # $1=settings.json path
+# Intent-memory hooks. Claude Code, Codex, and Gemini CLI (what Antigravity runs
+# on) all take the same `hooks.<Event>[].hooks[]` shape and the same stdin
+# payload; only the config path and the event names differ, so both come from
+# the environment record. Idempotent: keyed on the hook filename, so re-running
+# never duplicates entries.
+merge_hooks(){ # $1=config path  $2=pre-prompt event  $3=post-turn event
   node -e '
-const [path, cmdUps, cmdStop] = process.argv.slice(1)
+const [path, evPre, evPost, bun, cmdUps, cmdStop] = process.argv.slice(1)
 const fs = require("fs"), p = require("path")
 let cfg = {}
 try { if (fs.existsSync(path) && fs.statSync(path).size) cfg = JSON.parse(fs.readFileSync(path, "utf8")) } catch {}
 const hooks = cfg.hooks ?? (cfg.hooks = {})
-const ensure = (event, file, cmd) => {
+const ensure = (event, file, script) => {
   const arr = Array.isArray(hooks[event]) ? hooks[event] : (hooks[event] = [])
   const present = arr.some(g => Array.isArray(g.hooks) && g.hooks.some(h => typeof h.command === "string" && h.command.includes(file)))
-  if (!present) arr.push({ hooks: [{ type: "command", command: cmd }] })
+  if (!present) arr.push({ hooks: [{ type: "command", command: "\"" + bun + "\" \"" + script + "\"" }] })
 }
-ensure("UserPromptSubmit", "hooks/user_prompt_submit.ts", "bun \"" + cmdUps + "\"")
-ensure("Stop", "hooks/stop.ts", "bun \"" + cmdStop + "\"")
+ensure(evPre, "hooks/user_prompt_submit.ts", cmdUps)
+ensure(evPost, "hooks/stop.ts", cmdStop)
 fs.mkdirSync(p.dirname(path), { recursive: true })
 fs.writeFileSync(path, JSON.stringify(cfg, null, 2))
-' "$1" "$HOOK_UPS" "$HOOK_STOP"
+' "$1" "$2" "$3" "$BUN_BIN" "$HOOK_UPS" "$HOOK_STOP"
 }
-del_claude_hooks(){ # $1=settings.json path
+del_hooks(){ # $1=config path  $2=pre-prompt event  $3=post-turn event
   [ -f "$1" ] || return 0
   node -e '
-const [path] = process.argv.slice(1)
+const [path, ...events] = process.argv.slice(1)
 const fs = require("fs")
 let cfg; try { cfg = JSON.parse(fs.readFileSync(path, "utf8")) } catch { process.exit(0) }
 if (!cfg.hooks) process.exit(0)
-for (const event of ["UserPromptSubmit", "Stop"]) {
+const ours = c => typeof c === "string" && (c.includes("hooks/user_prompt_submit.ts") || c.includes("hooks/stop.ts"))
+for (const event of events) {
   if (!Array.isArray(cfg.hooks[event])) continue
-  cfg.hooks[event] = cfg.hooks[event].filter(g => !(Array.isArray(g.hooks) && g.hooks.some(h => typeof h.command === "string" && (h.command.includes("hooks/user_prompt_submit.ts") || h.command.includes("hooks/stop.ts")))))
+  // Prune hook-by-hook, not group-by-group: another tool may share the group,
+  // and dropping the whole group would take its entries down with ours.
+  cfg.hooks[event] = cfg.hooks[event]
+    .map(g => Array.isArray(g.hooks) ? { ...g, hooks: g.hooks.filter(h => !ours(h.command)) } : g)
+    .filter(g => !Array.isArray(g.hooks) || g.hooks.length > 0)
   if (cfg.hooks[event].length === 0) delete cfg.hooks[event]
 }
 if (Object.keys(cfg.hooks).length === 0) delete cfg.hooks
 fs.writeFileSync(path, JSON.stringify(cfg, null, 2))
 console.log("   removed vectors hooks from " + path)
-' "$1"
+' "$1" "$2" "$3"
 }
 
 bind_environment(){
   local id="$1" label="$2" skill_dir="$3" command_dir="$4" mcp_kind="$5" mcp_path="$6" mcp_topkey="$7" mcp_flavor="$8"
+  local hooks_path="$9" hooks_pre="${10}" hooks_post="${11}"
   say "$label"
   [ -n "$skill_dir" ]   && link_skill "$skill_dir"
   [ -n "$command_dir" ] && link_cmd "$command_dir"
@@ -172,14 +184,20 @@ bind_environment(){
       touched+=("mcp    -> $mcp_path"); note "registered MCP 'vectors'" ;;
     none) ;;
   esac
-  # Intent-memory hooks: Claude Code only (its settings.json lives beside skills/).
-  if [ "$id" = "claude_code" ]; then
-    merge_claude_hooks "$HOME/.claude/settings.json"
-    touched+=("hooks  -> $HOME/.claude/settings.json"); note "wired intent-memory hooks"
+  # Intent-memory hooks, for every environment whose record names a config.
+  if [ -n "$hooks_path" ]; then
+    merge_hooks "$hooks_path" "$hooks_pre" "$hooks_post"
+    touched+=("hooks  -> $hooks_path"); note "wired intent-memory hooks ($hooks_pre + $hooks_post)"
+    # Codex fingerprints each hook and asks before running it the first time.
+    if [ "$id" = "codex" ]; then
+      note "Codex will ask once to trust these hooks on next launch"
+    fi
   fi
+  return 0
 }
 unbind_environment(){
   local id="$1" label="$2" skill_dir="$3" command_dir="$4" mcp_kind="$5" mcp_path="$6" mcp_topkey="$7" mcp_flavor="$8"
+  local hooks_path="$9" hooks_pre="${10}" hooks_post="${11}"
   [ -n "$skill_dir" ]   && unlink_skill "$skill_dir"
   [ -n "$command_dir" ] && unlink_file "$command_dir/vectors.md"
   case "$mcp_kind" in
@@ -188,7 +206,8 @@ unbind_environment(){
     toml) del_toml_mcp "$mcp_path" ;;
     none) ;;
   esac
-  [ "$id" = "claude_code" ] && del_claude_hooks "$HOME/.claude/settings.json"
+  [ -n "$hooks_path" ] && del_hooks "$hooks_path" "$hooks_pre" "$hooks_post"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -211,6 +230,7 @@ if ! have bun; then
   export PATH="$HOME/.bun/bin:$PATH"
 fi
 have bun || { echo "!! Bun install failed — see https://bun.sh" >&2; exit 1; }
+BUN_BIN="$(command -v bun)"
 
 # ---------------------------------------------------------------------------
 # 2) PostgreSQL 16 + pgvector  (no Docker)

@@ -52,6 +52,8 @@ daemon, and editor/MCP wiring — with **no Docker**:
 bash setup.sh               # full install (Homebrew on macOS / apt on Linux)
 bash setup.sh --no-db       # skip Postgres provisioning (use an existing $VINDEX_DSN)
 vectors doctor              # verify Bun, DSN, Postgres, pgvector, schema, daemon
+vectors db                  # every table with row counts + size
+vectors db intent --limit 5 --order frequency --desc
 ```
 
 The global config/cache home is `$VINDEX_HOME` (default
@@ -165,18 +167,21 @@ projects from *its own* cwd, so pin `VINDEX_PROJECT` per deployment or lean on
 
 ## Intent memory (conversation-learning hooks)
 
-Beyond indexing files, the plugin learns from the *conversation*. Claude Code
-hooks (`hooks/hooks.json`, wired via the plugin manifest) record what you ask,
+Beyond indexing files, the plugin learns from the *conversation*. Hooks in
+Claude Code, Codex, and Antigravity/Gemini (`hooks/hooks.json` via the plugin
+manifest, or merged into each harness config by `setup.sh`) record what you ask,
 how often a similar thing recurs, the assistant's response, and whether it
 resolved your intent — then inject prior known resolutions (and failures to
 avoid) into context *before* the next reply.
 
 - **Store**: the Postgres `intent` / `intent_resolution` tables (deterministic
   intent id `"i"+sha256(normalized)[:30]`). No daemon required.
-- **Recall is fast & model-free**: `UserPromptSubmit` does an exact-id + lexical
-  Jaccard lookup (current project preferred, global fallback) and injects in
-  milliseconds; the write happens in a detached process.
-- **Grading**: `Stop` grades the finished exchange with a **local Ollama judge**
+- **Recall is fast & model-free**: the pre-prompt hook (`UserPromptSubmit`, or
+  `BeforeAgent` on Gemini) does an exact-id + lexical Jaccard lookup (current
+  project preferred, global fallback) and injects in milliseconds; the write
+  happens in a detached process.
+- **Grading**: the post-turn hook (`Stop`, or `AfterAgent` on Gemini) grades the
+  finished exchange with a **local Ollama judge**
   when reachable, else a transcript heuristic (a re-ask ⇒ unresolved, acceptance
   ⇒ resolved).
 - **CLI / MCP**: `vectors intent record|recall|resolve|grade|stats`; MCP tools
@@ -197,7 +202,8 @@ Toggles: `VINDEX_INTENT_DISABLE=1` (hooks become no-ops),
 ## Background daemon
 
 A single long-lived service (launchd / systemd `--user`) keeps the store current:
-a **chat feeder** (mirrors Claude transcripts into `session`/`message`), a
+a **chat feeder** (mirrors Claude, Codex, and Gemini transcripts into
+`session`/`message`), a
 **source feeder** (re-ingests changed files), and a **digest worker** (embeds new
 content via `LISTEN/NOTIFY` + poll, runs optional local-Ollama summaries / fact
 extraction). The searchable path never needs Ollama. Manage with
@@ -218,7 +224,8 @@ extraction). The searchable path never needs Ollama. Manage with
 - `src/mcp/server.ts` — stdio MCP server (13 tools).
 - `src/viewer/` — 3D synapse viewer: `server.ts` (HTTP + JSON API, PCA via
   `ml-pca`) + `static.ts` (traversal-safe static asset serving, `/vendor/three/*`).
-- `hooks/` — `user_prompt_submit.ts` (recall + inject), `stop.ts` (grade).
+- `hooks/` — `user_prompt_submit.ts` (recall + inject), `stop.ts` (grade); wired
+  into Claude Code, Codex, and Antigravity.
 - `assets/viewer/` — 3D synapse navigator front-end (`index.html` + `viewer.css` +
   ES modules under `js/`), served live by `src/viewer/server.ts`; mirrored into
   `skills/vector-index/assets/viewer/` by `scripts/sync-assets.ts`.

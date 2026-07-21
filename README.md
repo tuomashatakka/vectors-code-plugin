@@ -19,8 +19,8 @@ VINDEX_DSN              one PostgreSQL + pgvector database
   └── rustbook/
 ```
 
-It also **learns from the conversation**: Claude Code hooks record each user
-intent, how often similar asks recur, the assistant's response, and whether it
+It also **learns from the conversation**: hooks in Claude Code, Codex, and
+Antigravity record each user intent, how often similar asks recur, the assistant's response, and whether it
 resolved the intent — then inject prior known resolutions (and failures to
 avoid) into context before the next reply. Recall is a fast, model-free lexical
 lookup; grading uses a local Ollama judge with a transcript-heuristic fallback.
@@ -65,6 +65,8 @@ bash setup.sh --yes             # non-interactive (daemon included)
 bash setup.sh --no-daemon       # everything except the daemon
 bash setup.sh --no-db           # skip Postgres provisioning (use existing $VINDEX_DSN)
 vectors doctor                  # verify Bun, DSN, Postgres, pgvector, schema, daemon
+vectors db                      # every table with row counts + size
+vectors db chunk --limit 5      # print a table's rows, prettily
 ```
 
 It is idempotent; reverse the editor/MCP wiring + daemon with `bash setup.sh
@@ -119,8 +121,8 @@ vectors                         # autocomplete · Ctrl-P switch · :project NAME
 ### Background daemon
 
 Keeps the store current: a **chat feeder** (mirrors Claude transcripts — incl.
-subagent transcripts — and the global prompt history `~/.claude/history.jsonl`
-into `session`/`message`), a **source feeder** (re-ingests changed files), and a
+subagent transcripts — the global prompt history `~/.claude/history.jsonl`,
+Codex rollouts, and Gemini/Antigravity chats into `session`/`message`), a **source feeder** (re-ingests changed files), and a
 **digest worker** (embeds new content; optional local-Ollama summaries / fact
 extraction). Install as a service (launchd on macOS, systemd `--user` on Linux):
 
@@ -176,13 +178,13 @@ aliases.
 | `VINDEX_DEFAULT` | `default` | Fallback project name. |
 | `VINDEX_READONLY` | off | Block all mutating operations. |
 | `VINDEX_ALLOW_ROOTS` | (none) | `:`-separated roots allowed for ingest/create. |
-| `VINDEX_INTENT_DISABLE` | off | Disable the intent-memory hooks. |
+| `VINDEX_INTENT_DISABLE` | off | Disable the intent-memory hooks (all harnesses). |
 | `VINDEX_INTENT_NO_JUDGE` | off | Skip the Ollama judge (heuristic grading only). |
 | `VINDEX_INTENT_MIN_SCORE` | `0.45` | Recall inject threshold. |
 | `VINDEX_INTENT_MAX_TOKENS` | `400` | Injection token budget. |
 | `VINDEX_OLLAMA_URL` (alias `OLLAMA_URL`) | `http://127.0.0.1:11434` | Local Ollama (judge / digest). |
 | `VINDEX_OLLAMA_MODEL` | `llama3.1:8b` | Ollama model. |
-| `VINDEX_CHAT_GLOBS` (alias `UKDB_CHAT_GLOBS`) | `~/.claude/projects/**/*.jsonl,~/.claude/history.jsonl` | Session-history globs (daemon chat feeder): transcripts incl. subagents, plus the global prompt history. |
+| `VINDEX_CHAT_GLOBS` (alias `UKDB_CHAT_GLOBS`) | Claude transcripts + history, Codex rollouts, Gemini chats | Session-history globs (daemon chat feeder): Claude transcripts incl. subagents and the global prompt history, `~/.codex/sessions/**/rollout-*.jsonl`, and `~/.gemini/tmp/*/chats/*.json`. |
 | `VINDEX_CHAT_INTERVAL` / `VINDEX_SOURCE_INTERVAL` | `5` / `300` (s) | Feeder cadences. |
 | `VINDEX_VIEWER_PORT` (alias `PORT`) | `7341` | 3D viewer port. |
 | `VINDEX_MCP_HTTP_PORT` (alias `PORT`) | `8765` | Streamable-HTTP MCP port (`vectors mcp http`). |
@@ -200,7 +202,7 @@ src/
   daemon/       supervisor + chat/source feeders + digest worker
   mcp/          MCP server: stdio + streamable HTTP (13 tools)
   viewer/       3D synapse viewer HTTP + JSON API (PCA) + static asset serving
-hooks/          UserPromptSubmit + Stop hooks (intent memory)
+hooks/          intent-memory hooks (Claude Code + Codex + Antigravity)
 references/     unified-knowledge-db.sql (full DDL) + design docs
 assets/viewer/  viewer front-end bundle (index.html, viewer.css, ES modules)
 skills/vector-index/   SKILL.md, daemon tooling, viewer bundle mirror, reference docs

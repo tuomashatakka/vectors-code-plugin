@@ -62,11 +62,18 @@ export const OLLAMA_URL = envAny([ 'VINDEX_OLLAMA_URL', 'UKDB_OLLAMA_URL', 'OLLA
 export const OLLAMA_MODEL = envAny([ 'VINDEX_OLLAMA_MODEL', 'UKDB_OLLAMA_MODEL' ], 'llama3.1:8b')
 
 // Session history watched by the daemon's chat feeder: Claude Code transcripts
-// (the `**` also covers nested subagents/*.jsonl) + the global prompt history.
+// (the `**` also covers nested subagents/*.jsonl) + the global prompt history,
+// Codex rollouts, and Gemini CLI / Antigravity chat recordings. All three
+// formats are handled by parseTranscript (src/transcript.ts).
 // `~` is expanded per entry — glob() would treat it as a literal directory.
 export const CHAT_GLOBS = envAny(
   [ 'VINDEX_CHAT_GLOBS', 'UKDB_CHAT_GLOBS' ],
-  [ join(homedir(), '.claude', 'projects', '**', '*.jsonl'), join(homedir(), '.claude', 'history.jsonl') ].join(','),
+  [
+    join(homedir(), '.claude', 'projects', '**', '*.jsonl'),
+    join(homedir(), '.claude', 'history.jsonl'),
+    join(homedir(), '.codex', 'sessions', '**', 'rollout-*.jsonl'),
+    join(homedir(), '.gemini', 'tmp', '*', 'chats', '*.json'),
+  ].join(','),
 )
   .split(',')
   .map(s => s.trim())

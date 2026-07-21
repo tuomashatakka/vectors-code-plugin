@@ -31,7 +31,7 @@ Postgres: `export VINDEX_DSN=postgres://localhost:5432/vectors`.
 
 | Path | Responsibility |
 | --- | --- |
-| `cli/` | CLI registry: `index.ts` (dispatch + `help`; bare `vectors` → TUI), `kit.ts` (command type incl. `hidden`, arg parse, result print), `tui.ts` (opentui interactive shell: autocomplete + project switcher), `commands/*.ts` (one module per command group — `index`, `search`, `ls`, `viewer`, `daemon`, `mcp`, `setup`, `doctor`, `intent`). |
+| `cli/` | CLI registry: `index.ts` (dispatch + `help`; bare `vectors` → TUI), `kit.ts` (command type incl. `hidden`, arg parse, result print), `tui.ts` (opentui interactive shell: autocomplete + project switcher), `commands/*.ts` (one module per command group — `index`, `search`, `ls`, `viewer`, `daemon`, `mcp`, `setup`, `doctor`, `intent`, `db`). `db.ts` also holds the terminal-table renderer (catalog-checked identifiers, per-type cell summaries, width budgeting). |
 | `db/` | `pool.ts` (pg pool, `q`/`q1`/`tx`/`toVector`), `schema.ts` (apply DDL + migrations + `ensureSpace`), `projects.ts` (registry + cwd auto-resolution), `ingest.ts` (diff-by-hash ingest + AST chunks + import edges; skips `.gitignore`d files by default), `notify.ts` (`pg_notify` event bus — search/ingest activity for the viewer's SSE), `types.ts` (shared domain types). |
 | `chunk/` | `chunker.ts` (markdown/code/text/auto line+char windows), `ast.ts` (tree-sitter WASM per-symbol chunks + import graph), `units.ts` (`unit_type` classifier). |
 | `embed/` | `embedder.ts` (feature-extraction, mean-pool + L2-norm), `rerank.ts` (cross-encoder sequence classification). |
@@ -43,10 +43,12 @@ Postgres: `export VINDEX_DSN=postgres://localhost:5432/vectors`.
 | `config.ts` | All env config. `VINDEX_*` canonical; `UKDB_*` accepted as deprecated aliases via `envAny()`. |
 | `guards.ts` | `VINDEX_READONLY` / `VINDEX_ALLOW_ROOTS` capability guards. |
 | `manifest.ts` | `defaultProjectName()` — project name from package.json / composer.json / Cargo.toml / pyproject.toml / go.mod, fallback folder name (bare `vectors index`). |
-| `transcript.ts` | Tolerant JSONL parsing: transcripts (daemon chat feeder + intent grader) and `parsePromptHistory` for `~/.claude/history.jsonl`. |
+| `transcript.ts` | Tolerant transcript parsing for the daemon chat feeder + intent grader — auto-detects Claude JSONL, Codex rollouts, and Gemini chat documents; plus `parsePromptHistory` for `~/.claude/history.jsonl`. |
 | `prompts.ts` | Grounding / reasoning prompt scaffolds. |
 
-`hooks/` holds the Claude Code `UserPromptSubmit` + `Stop` hooks (intent memory).
+`hooks/` holds the intent-memory hooks, wired into Claude Code and Codex
+(`UserPromptSubmit` + `Stop`) and Antigravity/Gemini (`BeforeAgent` +
+`AfterAgent`) — see `spec.md` §10.
 `references/unified-knowledge-db.sql` is the full DDL. `skills/vector-index/`
 ships the skill (SKILL.md, daemon tooling, viewer asset, reference docs).
 
@@ -66,4 +68,5 @@ ships the skill (SKILL.md, daemon tooling, viewer asset, reference docs).
   fuses create + add-source + ingest over the idempotent `db/` primitives.
 - **No backward compatibility** — the CLI exposes only the simplified surface
   (`index`, `search`, `ls`, `viewer`, `daemon {start,stop,status,logs}`, `mcp`,
-  `setup`, `doctor`); there is no `vindex` bin and no legacy multi-step commands.
+  `setup`, `doctor`, `db`); there is no `vindex` bin and no legacy multi-step
+  commands.
