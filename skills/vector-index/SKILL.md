@@ -1,21 +1,6 @@
 ---
 name: vector-index
-description: >
-  A global, local, in-process semantic RAG store partitioned by PROJECT. One
-  store on disk; every project is its own embedded + cross-encoder-reranked index,
-  and the active project is auto-resolved from the working directory (so an agent
-  working inside a repo just gets that repo's retrieval, hsci-style). Supports
-  per-project search AND global cross-project search that merges + reranks hits
-  from every project. Use this whenever the user wants to "search my docs/notes/
-  codebase", build a local RAG / retrieval index, "index this project", give a
-  local LLM or agent grounded project-scoped retrieval, set up a vector DB over
-  files, ask questions across one repo or across all their projects, or wire
-  semantic search into an MCP / Ollama / opencode / Claude setup — even if they
-  don't say the word "vector". Trigger on phrases like "semantic search over X",
-  "index this repo", "RAG for my projects", "search across all my projects",
-  "vector DB keyed by project", "what did we decide in <project>", or "let the
-  agent search the current project". Everything runs locally: no API keys, no
-  network at query time.
+description: A emantic RAG store partitioned by PROJECT. One store on disk; every project is its own embedded + cross-encoder-reranked index, and the active project is auto-resolved from the working directory (so an agent working inside a repo just gets that repo's retrieval, hsci-style). Supports per-project search AND global cross-project search that merges + reranks hits from every project. Use this whenever the user wants to "search my docs/notes/ codebase", build a local RAG / retrieval index, "index this project", give a local LLM or agent grounded project-scoped retrieval, set up a vector DB over files, ask questions across one repo or across all their projects, or wire semantic search into an MCP — even if they don't say the word "vector". Trigger on phrases like "semantic search over X", "index this repo", "RAG for my projects", "search across all my projects", "vector DB keyed by project", "what did we decide in project", or "let the agent search the current project".
 ---
 
 # vector-index
